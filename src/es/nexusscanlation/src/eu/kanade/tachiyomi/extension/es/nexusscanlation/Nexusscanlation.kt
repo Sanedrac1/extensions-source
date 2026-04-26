@@ -1,6 +1,11 @@
 package eu.kanade.tachiyomi.extension.es.nexusscanlation
 
+import android.app.Application
+import android.content.SharedPreferences
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -9,13 +14,23 @@ import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class Nexusscanlation : HttpSource() {
+class Nexusscanlation :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "NexusScanlation"
     override val baseUrl = "https://nexusscanlation.com"
@@ -25,8 +40,184 @@ class Nexusscanlation : HttpSource() {
     private val apiBaseUrl = "https://api.nexusscanlation.com/api/v1"
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
 
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", baseUrl)
+    private val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
+    override val client: OkHttpClient = network.client.newBuilder()
+        .addInterceptor(::authInterceptor)
+        .build()
+
+    override fun headersBuilder(): Headers.Builder {
+        val builder = super.headersBuilder()
+            .add("Referer", baseUrl)
+            .add("Origin", "https://nexusscanlation.com")
+            .add("Accept", "application/json, text/plain, */*")
+            .add("Accept-Language", "es-ES,es;q=0.9")
+
+        val userAgent = preferences.getString(PREF_USER_AGENT, "") ?: ""
+        if (userAgent.isNotBlank()) {
+            builder.set("User-Agent", userAgent)
+        }
+
+        val customCookie = preferences.getString(PREF_CUSTOM_COOKIE, "") ?: ""
+        val adultCookie = "adult_content_bypass=1; age_gate_bypassed=true"
+        val finalCookie = if (customCookie.isNotBlank()) {
+            "$adultCookie; $customCookie"
+        } else {
+            adultCookie
+        }
+        builder.add("Cookie", finalCookie)
+
+        return builder
+    }
+
+    private fun authInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+
+        if (!request.url.host.contains("api.nexusscanlation.com")) {
+            return chain.proceed(request)
+        }
+
+        if (request.url.encodedPath.contains("/auth/login")) {
+            return chain.proceed(request)
+        }
+
+        var token = preferences.getString(PREF_ACCESS_TOKEN, "") ?: ""
+        val expiresAtStr = preferences.getString(PREF_EXPIRES_AT, "") ?: ""
+        val manualToken = preferences.getString(PREF_MANUAL_TOKEN, "") ?: ""
+
+        if (manualToken.isNotBlank()) {
+            token = manualToken
+        } else {
+            val isExpired = isTokenExpired(expiresAtStr)
+            if (token.isEmpty() || isExpired) {
+                token = performLogin() ?: ""
+            }
+        }
+
+        if (token.isEmpty()) {
+            return chain.proceed(request)
+        }
+
+        val authRequest = request.newBuilder()
+            .header("Authorization", "Bearer $token")
+            .build()
+
+        val response = chain.proceed(authRequest)
+
+        if (response.code == 401 && manualToken.isBlank()) {
+            response.close()
+            val newToken = performLogin() ?: ""
+            if (newToken.isNotEmpty()) {
+                val retryRequest = request.newBuilder()
+                    .header("Authorization", "Bearer $newToken")
+                    .build()
+                return chain.proceed(retryRequest)
+            }
+        }
+
+        return response
+    }
+
+    private fun isTokenExpired(expiresAtStr: String): Boolean {
+        if (expiresAtStr.isBlank()) return false
+        return try {
+            val timestamp = expiresAtStr.toLongOrNull()
+            if (timestamp != null) {
+                val timeMs = if (timestamp < 1000000000000L) timestamp * 1000 else timestamp
+                System.currentTimeMillis() >= timeMs
+            } else {
+                val date = dateFormat.parse(expiresAtStr)
+                date != null && System.currentTimeMillis() >= date.time
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun performLogin(): String? {
+        val email = preferences.getString(PREF_EMAIL, "") ?: ""
+        val password = preferences.getString(PREF_PASSWORD, "") ?: ""
+
+        if (email.isBlank() || password.isBlank()) {
+            return null
+        }
+
+        val payload = """{"email":"$email","password":"$password"}"""
+        val requestBody = payload.toRequestBody("application/json".toMediaTypeOrNull())
+
+        val loginUrl = "$apiBaseUrl/auth/login"
+        val request = Request.Builder()
+            .url(loginUrl)
+            .post(requestBody)
+            .headers(headersBuilder().build())
+            .build()
+
+        return try {
+            val response = network.client.newCall(request).execute()
+            if (response.isSuccessful) {
+                val authResponse = response.parseAs<AuthResponseDto>()
+                val token = authResponse.access_token ?: return null
+                val expiresAt = authResponse.expires_at?.jsonPrimitive?.content ?: ""
+
+                preferences.edit()
+                    .putString(PREF_ACCESS_TOKEN, token)
+                    .putString(PREF_EXPIRES_AT, expiresAt)
+                    .apply()
+
+                token
+            } else {
+                response.close()
+                null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        val emailPref = EditTextPreference(screen.context).apply {
+            key = PREF_EMAIL
+            title = "Email"
+            summary = "Email para iniciar sesión en la web"
+            setDefaultValue("")
+        }
+        screen.addPreference(emailPref)
+
+        val passwordPref = EditTextPreference(screen.context).apply {
+            key = PREF_PASSWORD
+            title = "Contraseña"
+            summary = "Contraseña para iniciar sesión"
+            setDefaultValue("")
+        }
+        screen.addPreference(passwordPref)
+
+        val manualTokenPref = EditTextPreference(screen.context).apply {
+            key = PREF_MANUAL_TOKEN
+            title = "Token Manual (Opcional)"
+            summary = "Útil para entornos sin WebView (ej: Suwayomi). Sobrescribe el login automático."
+            setDefaultValue("")
+        }
+        screen.addPreference(manualTokenPref)
+
+        val userAgentPref = EditTextPreference(screen.context).apply {
+            key = PREF_USER_AGENT
+            title = "User-Agent"
+            summary = "Para evadir Cloudflare. Ej. de navegador de PC."
+            setDefaultValue("")
+        }
+        screen.addPreference(userAgentPref)
+
+        val customCookiePref = EditTextPreference(screen.context).apply {
+            key = PREF_CUSTOM_COOKIE
+            title = "Cookie Manual (cf_clearance)"
+            summary = "Valor de la cookie cf_clearance si es requerida por Cloudflare."
+            setDefaultValue("")
+        }
+        screen.addPreference(customCookiePref)
+    }
 
     override fun getMangaUrl(manga: SManga): String = "$baseUrl/series/${manga.url}"
 
@@ -184,4 +375,14 @@ class Nexusscanlation : HttpSource() {
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+
+    companion object {
+        private const val PREF_EMAIL = "email"
+        private const val PREF_PASSWORD = "password"
+        private const val PREF_MANUAL_TOKEN = "manual_token"
+        private const val PREF_ACCESS_TOKEN = "access_token"
+        private const val PREF_EXPIRES_AT = "expires_at"
+        private const val PREF_USER_AGENT = "user_agent"
+        private const val PREF_CUSTOM_COOKIE = "custom_cookie"
+    }
 }

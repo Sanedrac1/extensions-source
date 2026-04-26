@@ -70,3 +70,9 @@ class PageEntryDto(
     val orden: Int = 0,
     val url: String = "",
 )
+
+@Serializable
+class AuthResponseDto(
+    val access_token: String? = null,
+    val expires_at: kotlinx.serialization.json.JsonElement? = null,
+)
