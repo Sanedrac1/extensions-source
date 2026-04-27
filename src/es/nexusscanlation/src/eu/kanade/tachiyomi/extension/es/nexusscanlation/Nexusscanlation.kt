@@ -388,7 +388,7 @@ class Nexusscanlation :
         private const val PREF_EXPIRES_AT = "expires_at"
         private const val PREF_USER_AGENT = "user_agent"
         private const val PREF_CUSTOM_COOKIE = "custom_cookie"
-        
+
         private val r2Regex = Regex("""https://[a-zA-Z0-9\-]+\.r2\.cloudflarestorage\.com""")
     }
 }
