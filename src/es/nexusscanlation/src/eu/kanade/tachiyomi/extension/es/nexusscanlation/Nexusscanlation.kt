@@ -315,7 +315,11 @@ class Nexusscanlation :
     override fun pageListParse(response: Response): List<Page> {
         val payload = response.parseAs<ChapterPagesPayloadDto>()
         return payload.data?.paginas.orEmpty()
-            .mapIndexed { index, page -> Page(index, imageUrl = page.url) }
+            .mapIndexed { index, page ->
+                // Reemplazo dinámico de forma eficiente
+                val fixedUrl = page.url.replace(r2Regex, "https://cdn.nexusscanlation.com")
+                Page(index, imageUrl = fixedUrl)
+            }
             .toList()
     }
 
@@ -384,5 +388,7 @@ class Nexusscanlation :
         private const val PREF_EXPIRES_AT = "expires_at"
         private const val PREF_USER_AGENT = "user_agent"
         private const val PREF_CUSTOM_COOKIE = "custom_cookie"
+        
+        private val r2Regex = Regex("""https://[a-zA-Z0-9\-]+\.r2\.cloudflarestorage\.com""")
     }
 }
