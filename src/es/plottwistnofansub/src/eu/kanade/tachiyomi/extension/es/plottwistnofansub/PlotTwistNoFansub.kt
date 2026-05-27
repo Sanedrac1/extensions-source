@@ -17,6 +17,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -167,6 +168,7 @@ class PlotTwistNoFansub : HttpSource() {
             ?: document.selectFirst("script:containsData(manga_id)")
                 ?.data()
                 ?.let { OLD_MANGA_ID_REGEX.find(it)?.groupValues?.get(1) }
+            ?: document.selectFirst("#mn-detail-load-more")?.attr("data-manga")
             ?: throw Exception("No se pudo encontrar el ID del manga")
 
         val scriptData = document.selectFirst("script:containsData(mnSeriesNavBundle)")?.data()
@@ -290,6 +292,53 @@ class PlotTwistNoFansub : HttpSource() {
                         page++
                     }
                 }
+            } else {
+                // New AJAX fallback for "Cargar más" (plot_load_chapters)
+                val loadMoreBtn = document.selectFirst("#mn-detail-load-more")
+                if (loadMoreBtn != null) {
+                    var page = 1
+                    var hasMore = true
+
+                    while (hasMore) {
+                        val form = FormBody.Builder()
+                            .add("action", "plot_load_chapters")
+                            .add("manga_id", mangaId)
+                            .add("page", page.toString())
+                            .build()
+
+                        val apiResponse = client.newCall(
+                            POST("$baseUrl/wp-admin/admin-ajax.php", headers, form),
+                        ).execute()
+
+                        val apiData = apiResponse.parseAs<LoadChaptersApiResponse>()
+
+                        if (!apiData.success || apiData.data?.html.isNullOrEmpty()) {
+                            hasMore = false
+                        } else {
+                            val fragment = Jsoup.parseBodyFragment(apiData.data.html)
+                            fragment.select("a.mn-detail-chapter-item, .contenedor-capitulo-miniatura a").forEach { a ->
+                                val url = a.attr("abs:href").ifEmpty { a.attr("href") }
+                                if (url.isNotEmpty()) {
+                                    chapters.add(
+                                        SChapter.create().apply {
+                                            setUrlWithoutDomain(url)
+                                            val num = a.selectFirst(".mn-detail-chapter-name, div.text-sm")?.text()?.trim() ?: ""
+                                            val divs = a.select("div.text-sm")
+                                            val title = if (divs.size > 1) divs.getOrNull(1)?.text()?.trim() ?: "" else ""
+                                            name = buildString {
+                                                append("Capítulo $num")
+                                                if (title.isNotEmpty()) append(" - $title")
+                                            }
+                                            date_upload = dateFormat.tryParse(a.selectFirst(".mn-detail-chapter-date, time")?.text()?.replace(HTML_TAG_REGEX, ""))
+                                        },
+                                    )
+                                }
+                            }
+                            hasMore = apiData.data.has_more
+                            page++
+                        }
+                    }
+                }
             }
         }
 
@@ -299,7 +348,7 @@ class PlotTwistNoFansub : HttpSource() {
     // =============================== Pages ================================
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        return document.select("div.cp-frame img, .cp-pic, div.pg-box img, div.page-break img").mapIndexed { i, img ->
+        return document.select("div.cp-frame img, .cp-pic, div.pg-box img, div.page-break img, div.rn-wrap img, img.rn-img, .rn-img").mapIndexed { i, img ->
             Page(i, imageUrl = img.imgAttr())
         }
     }

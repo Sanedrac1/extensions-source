@@ -19,3 +19,15 @@ class ChapterDto(
     val link: String,
     val date: String,
 )
+
+@Serializable
+class LoadChaptersApiResponse(
+    val success: Boolean,
+    val data: LoadChaptersDataDto? = null,
+)
+
+@Serializable
+class LoadChaptersDataDto(
+    val html: String = "",
+    @SerialName("has_more") val has_more: Boolean = false,
+)
