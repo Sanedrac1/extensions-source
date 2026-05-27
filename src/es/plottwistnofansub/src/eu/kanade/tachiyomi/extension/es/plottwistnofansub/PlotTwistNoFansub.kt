@@ -177,25 +177,60 @@ class PlotTwistNoFansub : HttpSource() {
 
         // Fallback for new theme HTML chapters
         document.select("a.mn-detail-chapter-item, .contenedor-capitulo-miniatura a").forEach { a ->
-            val url = a.attr("abs:href").ifEmpty { a.attr("href") }
-            if (url.isNotEmpty()) {
-                chapters.add(
-                    SChapter.create().apply {
-                        setUrlWithoutDomain(url)
-                        val num = a.selectFirst(".mn-detail-chapter-name, div.text-sm")?.text()?.trim() ?: ""
-                        val divs = a.select("div.text-sm")
-                        val title = if (divs.size > 1) divs.getOrNull(1)?.text()?.trim() ?: "" else ""
-                        name = buildString {
-                            append("Capítulo $num")
-                            if (title.isNotEmpty()) append(" - $title")
-                        }
-                        date_upload = dateFormat.tryParse(a.selectFirst(".mn-detail-chapter-date, time")?.text()?.replace(HTML_TAG_REGEX, ""))
-                    },
-                )
-            }
+            parseChapterElement(a)?.let { chapters.add(it) }
         }
 
-        if (scriptData != null) {
+        val loadMoreBtn = document.selectFirst("#mn-detail-load-more")
+
+        if (loadMoreBtn != null) {
+            // Priority 1: AJAX "Cargar más" pagination
+            var page = 1
+            var hasMore = true
+
+            // Standard AJAX headers to look like a browser request and satisfy Wordfence
+            val ajaxHeaders = headers.newBuilder()
+                .set("Referer", response.request.url.toString())
+                .add("X-Requested-With", "XMLHttpRequest")
+                .add("Origin", baseUrl)
+                .build()
+
+            while (hasMore) {
+                val form = FormBody.Builder()
+                    .add("action", "plot_load_chapters")
+                    .add("manga_id", mangaId)
+                    .add("page", page.toString())
+                    .build()
+
+                val apiResponse = client.newCall(
+                    POST("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, form),
+                ).execute()
+
+                if (!apiResponse.isSuccessful) {
+                    apiResponse.close()
+                    hasMore = false
+                    break
+                }
+
+                val apiData = try {
+                    apiResponse.parseAs<LoadChaptersApiResponse>()
+                } catch (e: Exception) {
+                    apiResponse.close()
+                    null
+                }
+
+                if (apiData == null || !apiData.success || apiData.data?.html.isNullOrEmpty()) {
+                    hasMore = false
+                } else {
+                    val fragment = Jsoup.parseBodyFragment(apiData.data.html)
+                    fragment.select("a.mn-detail-chapter-item, .contenedor-capitulo-miniatura a").forEach { a ->
+                        parseChapterElement(a)?.let { chapters.add(it) }
+                    }
+                    hasMore = apiData.data.has_more
+                    page++
+                }
+            }
+        } else if (scriptData != null) {
+            // Priority 2: REST batch pagination
             val navCsrf = CSRF_REGEX.find(scriptData)?.groupValues?.get(1)
                 ?: throw Exception("No se pudo encontrar el token")
 
@@ -203,11 +238,11 @@ class PlotTwistNoFansub : HttpSource() {
                 ?: throw Exception("No se pudo encontrar la URL de la API")
 
             val totalPagesText = document.selectFirst("script:containsData(totalPageCount)")?.data()
-            val totalPages = totalPagesText?.let { TOTAL_PAGES_REGEX.find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: 1
+            val totalPages = totalPagesText?.let { TOTAL_PAGES_REGEX.find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
             // First page is already fetched in HTML, begin on Page 2 if needed
             var page = if (chapters.isEmpty()) 1 else 2
-            var hasNextPage = page <= totalPages
+            var hasNextPage = true
 
             while (hasNextPage) {
                 val form = FormBody.Builder()
@@ -220,9 +255,20 @@ class PlotTwistNoFansub : HttpSource() {
                     POST(batchUrl, headers, form),
                 ).execute()
 
-                val apiData = apiResponse.parseAs<ChapterApiResponse>()
+                if (!apiResponse.isSuccessful) {
+                    apiResponse.close()
+                    hasNextPage = false
+                    break
+                }
 
-                if (apiData.chapters.isEmpty()) {
+                val apiData = try {
+                    apiResponse.parseAs<ChapterApiResponse>()
+                } catch (e: Exception) {
+                    apiResponse.close()
+                    null
+                }
+
+                if (apiData == null || apiData.chapters.isEmpty()) {
                     hasNextPage = false
                 } else {
                     apiData.chapters.forEach { chapter ->
@@ -240,13 +286,13 @@ class PlotTwistNoFansub : HttpSource() {
                         )
                     }
                     page++
-                    if (page > totalPages) {
+                    if (totalPages != null && page > totalPages) {
                         hasNextPage = false
                     }
                 }
             }
         } else {
-            // Old API method (fallback)
+            // Priority 3: Old REST API (fallback)
             val getcapsJson = document.selectFirst("script:containsData(plotGetcaps)")?.data()
             if (getcapsJson != null) {
                 val secret = SECRET_REGEX.find(getcapsJson)?.groupValues?.get(1)
@@ -270,9 +316,20 @@ class PlotTwistNoFansub : HttpSource() {
                         POST(apiUrl, headers, form),
                     ).execute()
 
-                    val apiData = apiResponse.parseAs<ChapterApiResponse>()
+                    if (!apiResponse.isSuccessful) {
+                        apiResponse.close()
+                        hasNextPage = false
+                        break
+                    }
 
-                    if (apiData.chapters.isEmpty()) {
+                    val apiData = try {
+                        apiResponse.parseAs<ChapterApiResponse>()
+                    } catch (e: Exception) {
+                        apiResponse.close()
+                        null
+                    }
+
+                    if (apiData == null || apiData.chapters.isEmpty()) {
                         hasNextPage = false
                     } else {
                         apiData.chapters.forEach { chapter ->
@@ -292,63 +349,37 @@ class PlotTwistNoFansub : HttpSource() {
                         page++
                     }
                 }
-            } else {
-                // New AJAX fallback for "Cargar más" (plot_load_chapters)
-                val loadMoreBtn = document.selectFirst("#mn-detail-load-more")
-                if (loadMoreBtn != null) {
-                    var page = 1
-                    var hasMore = true
-
-                    while (hasMore) {
-                        val form = FormBody.Builder()
-                            .add("action", "plot_load_chapters")
-                            .add("manga_id", mangaId)
-                            .add("page", page.toString())
-                            .build()
-
-                        val apiResponse = client.newCall(
-                            POST("$baseUrl/wp-admin/admin-ajax.php", headers, form),
-                        ).execute()
-
-                        val apiData = apiResponse.parseAs<LoadChaptersApiResponse>()
-
-                        if (!apiData.success || apiData.data?.html.isNullOrEmpty()) {
-                            hasMore = false
-                        } else {
-                            val fragment = Jsoup.parseBodyFragment(apiData.data.html)
-                            fragment.select("a.mn-detail-chapter-item, .contenedor-capitulo-miniatura a").forEach { a ->
-                                val url = a.attr("abs:href").ifEmpty { a.attr("href") }
-                                if (url.isNotEmpty()) {
-                                    chapters.add(
-                                        SChapter.create().apply {
-                                            setUrlWithoutDomain(url)
-                                            val num = a.selectFirst(".mn-detail-chapter-name, div.text-sm")?.text()?.trim() ?: ""
-                                            val divs = a.select("div.text-sm")
-                                            val title = if (divs.size > 1) divs.getOrNull(1)?.text()?.trim() ?: "" else ""
-                                            name = buildString {
-                                                append("Capítulo $num")
-                                                if (title.isNotEmpty()) append(" - $title")
-                                            }
-                                            date_upload = dateFormat.tryParse(a.selectFirst(".mn-detail-chapter-date, time")?.text()?.replace(HTML_TAG_REGEX, ""))
-                                        },
-                                    )
-                                }
-                            }
-                            hasMore = apiData.data.has_more
-                            page++
-                        }
-                    }
-                }
             }
         }
 
         return chapters
     }
 
+    private fun parseChapterElement(a: Element): SChapter? {
+        val url = a.attr("abs:href").ifEmpty { a.attr("href") }
+        if (url.isEmpty()) return null
+        return SChapter.create().apply {
+            setUrlWithoutDomain(url)
+            val num = a.selectFirst(".mn-detail-chapter-name")?.text()?.trim()
+                ?: a.selectFirst("div.text-sm")?.text()?.trim()
+                ?: ""
+            val title = a.selectFirst(".mn-detail-chapter-extend")?.text()?.trim()
+                ?: a.select("div.text-sm").getOrNull(1)?.text()?.trim()
+                ?: ""
+            name = buildString {
+                append("Capítulo $num")
+                if (title.isNotEmpty()) append(" - $title")
+            }
+            date_upload = dateFormat.tryParse(
+                a.selectFirst(".mn-detail-chapter-date, time")?.text()?.replace(HTML_TAG_REGEX, ""),
+            )
+        }
+    }
+
     // =============================== Pages ================================
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        return document.select("div.cp-frame img, .cp-pic, div.pg-box img, div.page-break img, div.rn-wrap img, img.rn-img, .rn-img").mapIndexed { i, img ->
+        return document.select("div.cp-frame img, .cp-pic, div.pg-box img, div.page-break img, div.rn-wrap img, img.rn-img, .rn-img, div.rd-panel img, img.rd-pic, .rd-pic").mapIndexed { i, img ->
             Page(i, imageUrl = img.imgAttr())
         }
     }
@@ -363,7 +394,15 @@ class PlotTwistNoFansub : HttpSource() {
             hasAttr("srcset") -> attr("srcset").substringBefore(" ")
             else -> attr("src")
         }.trim()
-        return if (url.startsWith("http")) url else baseUrl + url
+
+        val decodedUrl = url.replace("\\/", "/")
+        return if (decodedUrl.startsWith("http")) {
+            decodedUrl
+        } else if (decodedUrl.startsWith("//")) {
+            "https:$decodedUrl"
+        } else {
+            baseUrl + decodedUrl
+        }
     }
 
     private val dateFormat by lazy {
