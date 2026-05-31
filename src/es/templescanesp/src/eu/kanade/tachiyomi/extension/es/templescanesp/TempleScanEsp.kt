@@ -97,7 +97,13 @@ class TempleScanEsp :
 
         val customCookie = preferences.getString(PREF_CUSTOM_COOKIE, "") ?: ""
         if (customCookie.isNotBlank()) {
-            builder.add("Cookie", customCookie)
+            val existingCookie = builder.get("Cookie")
+            val combinedCookie = if (!existingCookie.isNullOrBlank()) {
+                "$existingCookie; $customCookie"
+            } else {
+                customCookie
+            }
+            builder.set("Cookie", combinedCookie)
         }
 
         return builder
