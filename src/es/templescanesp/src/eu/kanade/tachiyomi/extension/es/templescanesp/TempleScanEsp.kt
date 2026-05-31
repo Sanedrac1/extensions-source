@@ -18,6 +18,7 @@ import keiyoushi.utils.getPreferences
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -164,7 +165,7 @@ class TempleScanEsp :
             }
         }.build()
 
-        val redirectedDoc = client.newCall(POST(url, headers, body)).execute().asJsoup()
+        val redirectedDoc = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(POST(url, headers, body)).execute().asJsoup()
 
         return super.pageListParse(redirectedDoc)
     }
