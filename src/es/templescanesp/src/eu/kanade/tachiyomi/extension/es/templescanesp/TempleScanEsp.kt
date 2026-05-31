@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.FormBody
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -83,6 +84,23 @@ class TempleScanEsp :
     override val mangaSubString = "serie"
 
     override val useLoadMoreRequest = LoadMoreStrategy.Always
+
+    override fun headersBuilder(): Headers.Builder {
+        val builder = super.headersBuilder()
+            .add("Accept-Language", "es-ES,es;q=0.9")
+
+        val userAgent = preferences.getString(PREF_USER_AGENT, "") ?: ""
+        if (userAgent.isNotBlank()) {
+            builder.set("User-Agent", userAgent)
+        }
+
+        val customCookie = preferences.getString(PREF_CUSTOM_COOKIE, "") ?: ""
+        if (customCookie.isNotBlank()) {
+            builder.add("Cookie", customCookie)
+        }
+
+        return builder
+    }
 
     override val client by lazy {
         super.client.newBuilder()
@@ -173,6 +191,20 @@ class TempleScanEsp :
             summary = "Intenta buscar el dominio automáticamente al abrir la fuente."
             setDefaultValue(true)
         }.also { screen.addPreference(it) }
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_USER_AGENT
+            title = "User-Agent"
+            summary = "Para evadir bloqueos de red o Cloudflare. Ej. de navegador de PC."
+            setDefaultValue("")
+        }.also { screen.addPreference(it) }
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_CUSTOM_COOKIE
+            title = "Cookie Manual"
+            summary = "Valor de las cookies si es requerido por Cloudflare o el cortafuegos."
+            setDefaultValue("")
+        }.also { screen.addPreference(it) }
     }
 
     private fun SharedPreferences.fetchDomainPref() = getBoolean(FETCH_DOMAIN_PREF, true)
@@ -194,6 +226,8 @@ class TempleScanEsp :
         private const val BASE_URL_PREF = "overrideBaseUrl"
         private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
         private const val FETCH_DOMAIN_PREF = "fetchDomain"
+        private const val PREF_USER_AGENT = "user_agent"
+        private const val PREF_CUSTOM_COOKIE = "custom_cookie"
 
         // Obtained from an API call on https://templescanesp.net
         private const val SUPABASE_URL = "https://ysilhsqbtixygcgscvbb.supabase.co/rest/v1/parameters?select=value&name=eq.redirect_url_templescan"
