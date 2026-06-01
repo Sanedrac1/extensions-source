@@ -31,7 +31,7 @@ class ManhwaWeb : HttpSource() {
 
     private val json: Json by injectLazy()
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
+    override val client: OkHttpClient = network.client.newBuilder()
         .rateLimit(2)
         .build()
 
@@ -157,6 +157,13 @@ class ManhwaWeb : HttpSource() {
         val result = json.decodeFromString<PayloadPageDto>(response.body.string())
         return result.data.images.filter { it.startsWith("http") }
             .mapIndexed { i, img -> Page(i, imageUrl = img) }
+    }
+
+    override fun imageRequest(page: Page): Request {
+        val imageHeaders = headersBuilder()
+            .set("Referer", "$baseUrl/")
+            .build()
+        return GET(page.imageUrl!!, imageHeaders)
     }
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
