@@ -37,12 +37,12 @@ class TMOHentai : ParsedHttpSource() {
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/biblioteca?order_item=likes_count&order_dir=desc&title=&page=$page", headers)
 
-    override fun popularMangaSelector() = "div.element-thumbnail"
+    override fun popularMangaSelector() = "a.manga-card"
 
     override fun popularMangaFromElement(element: Element) = SManga.create().apply {
-        title = element.select("div.content-title a").text()
-        thumbnail_url = element.select("img.content-thumbnail-cover").attr("abs:src")
-        setUrlWithoutDomain(element.select("div.content-title a").attr("href"))
+        title = element.select("h3.manga-card__title").text()
+        thumbnail_url = element.select("img.manga-card__cover").attr("abs:src")
+        setUrlWithoutDomain(element.attr("href"))
     }
 
     override fun popularMangaNextPageSelector() = "ul.pagination li.active + li a"
@@ -56,22 +56,23 @@ class TMOHentai : ParsedHttpSource() {
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
 
     override fun mangaDetailsParse(document: Document) = SManga.create().apply {
-        title = document.select("h3.truncate, h1").text()
-        thumbnail_url = document.select("img.content-thumbnail-cover").attr("abs:src")
-        description = document.select("h5:contains(Sinopsis) + p").text()
+        title = document.select("h1#md-title").text()
+        thumbnail_url = document.select("img#md-cover").attr("abs:src")
+        description = document.select("div.md-info-row--synopsis div.md-info-row__value").text()
 
-        val type = document.select("li.heading:has(label:contains(Type)) + li span.label").text()
-        val tags = document.select("ul#md-tags-list span.label").map { it.text() }
+        val type = document.select("span.md-badge--type").text()
+        val tags = document.select("ul#md-tags-list a span, ul#md-tags-list span.label").map { it.text() }
         genre = (listOf(type) + tags).filter { it.isNotBlank() }.joinToString(", ")
 
-        val authorAndArtist = document.select("li.heading:has(label:contains(Uploaded By)) + li span.label").text()
+        val authorName = document.select("span.md-badge--author").text().trim()
+        val artistName = document.select("a.md-badge--uploader").text()
             .replace("TMOHentai", "", ignoreCase = true).trim()
-        author = authorAndArtist
-        artist = authorAndArtist
+        author = authorName.ifEmpty { artistName }
+        artist = artistName.ifEmpty { authorName }
         status = SManga.UNKNOWN
     }
 
-    override fun chapterListSelector() = "div.panel-heading a.btn-primary:has(i.fa-play)"
+    override fun chapterListSelector() = "a.md-preview-read-btn"
 
     override fun chapterFromElement(element: Element) = SChapter.create().apply {
         name = "Leer obra completa"
@@ -140,7 +141,7 @@ class TMOHentai : ParsedHttpSource() {
 
     override fun searchMangaNextPageSelector() = popularMangaNextPageSelector()
 
-    private fun searchMangaByIdRequest(id: String) = GET("$baseUrl/$PREFIX_CONTENTS/$id", headers)
+    private fun searchMangaByIdRequest(id: String) = GET("$baseUrl/$PREFIX_CONTENTS/$id/a", headers)
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH)) {
         val realQuery = query.removePrefix(PREFIX_ID_SEARCH)
@@ -149,7 +150,7 @@ class TMOHentai : ParsedHttpSource() {
             .asObservableSuccess()
             .map { response ->
                 val details = mangaDetailsParse(response)
-                details.url = "/$PREFIX_CONTENTS/$realQuery"
+                details.url = "/$PREFIX_CONTENTS/$realQuery/a"
                 MangasPage(listOf(details), false)
             }
     } else {
@@ -276,7 +277,7 @@ class TMOHentai : ParsedHttpSource() {
     )
 
     companion object {
-        const val PREFIX_CONTENTS = "contents"
+        const val PREFIX_CONTENTS = "library/manga"
         const val PREFIX_ID_SEARCH = "id:"
 
         private val SORTABLES = listOf(
