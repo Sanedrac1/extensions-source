@@ -89,13 +89,20 @@ class TMOHentai : ParsedHttpSource() {
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = "$baseUrl/biblioteca".toHttpUrl().newBuilder()
 
-        url.addQueryParameter("title", query)
-        url.addQueryParameter("page", page.toString())
-
+        var groupVal = ""
+        var tagVal = ""
         var contentValue = ""
 
         (if (filters.isEmpty()) getFilterList() else filters).forEach { filter ->
             when (filter) {
+                is GroupFilter -> {
+                    groupVal = filter.state.trim()
+                }
+
+                is TagFilter -> {
+                    tagVal = filter.state.trim()
+                }
+
                 is Types -> {
                     if (filter.toUriPart() != "all") {
                         url.addQueryParameter("type", filter.toUriPart())
@@ -130,6 +137,17 @@ class TMOHentai : ParsedHttpSource() {
             }
         }
 
+        if (groupVal.isNotEmpty()) {
+            return GET("$baseUrl/groups/$groupVal/a?page=$page", headers)
+        }
+
+        if (tagVal.isNotEmpty()) {
+            url.addQueryParameter("tag", tagVal.lowercase())
+        } else {
+            url.addQueryParameter("title", query)
+        }
+
+        url.addQueryParameter("page", page.toString())
         url.addQueryParameter("content", contentValue)
 
         return GET(url.build(), headers)
@@ -143,22 +161,40 @@ class TMOHentai : ParsedHttpSource() {
 
     private fun searchMangaByIdRequest(id: String) = GET("$baseUrl/$PREFIX_CONTENTS/$id/a", headers)
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH)) {
-        val realQuery = query.removePrefix(PREFIX_ID_SEARCH)
-
-        client.newCall(searchMangaByIdRequest(realQuery))
-            .asObservableSuccess()
-            .map { response ->
-                val details = mangaDetailsParse(response)
-                details.url = "/$PREFIX_CONTENTS/$realQuery/a"
-                MangasPage(listOf(details), false)
-            }
-    } else {
-        client.newCall(searchMangaRequest(page, query, filters))
-            .asObservableSuccess()
-            .map { response ->
-                searchMangaParse(response)
-            }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = when {
+        query.startsWith(PREFIX_ID_SEARCH) -> {
+            val realQuery = query.removePrefix(PREFIX_ID_SEARCH)
+            client.newCall(searchMangaByIdRequest(realQuery))
+                .asObservableSuccess()
+                .map { response ->
+                    val details = mangaDetailsParse(response)
+                    details.url = "/$PREFIX_CONTENTS/$realQuery/a"
+                    MangasPage(listOf(details), false)
+                }
+        }
+        query.startsWith(PREFIX_GROUP_SEARCH) -> {
+            val realQuery = query.removePrefix(PREFIX_GROUP_SEARCH).trim()
+            client.newCall(GET("$baseUrl/groups/$realQuery/a?page=$page", headers))
+                .asObservableSuccess()
+                .map { response ->
+                    searchMangaParse(response)
+                }
+        }
+        query.startsWith(PREFIX_TAG_SEARCH) -> {
+            val realQuery = query.removePrefix(PREFIX_TAG_SEARCH).trim()
+            client.newCall(GET("$baseUrl/biblioteca?tag=${realQuery.lowercase()}&page=$page", headers))
+                .asObservableSuccess()
+                .map { response ->
+                    searchMangaParse(response)
+                }
+        }
+        else -> {
+            client.newCall(searchMangaRequest(page, query, filters))
+                .asObservableSuccess()
+                .map { response ->
+                    searchMangaParse(response)
+                }
+        }
     }
 
     private class Genre(name: String, val id: String) : Filter.CheckBox(name)
@@ -189,11 +225,17 @@ class TMOHentai : ParsedHttpSource() {
                 Pair("Todos", ""),
                 Pair("Yaoi", "yaoi"),
                 Pair("Yuri", "yuri"),
-                Pair("Futanari", "futa"),
-                Pair("Solo Femenino", "sole_female"),
-                Pair("Solo Masculino", "sole_male"),
+                Pair("Futanari", "futanari"),
+                Pair("Solo Femenino", "sole-female"),
+                Pair("Solo Masculino", "sole-male"),
+                Pair("Vanilla", "vanilla"),
+                Pair("NTR / Netorare", "ntr"),
+                Pair("Sin censura (Uncensored)", "uncensored"),
             ),
         )
+
+    private class GroupFilter : Filter.Text("ID de Grupo (ej. 43)")
+    private class TagFilter : Filter.Text("Buscar etiqueta por nombre (ej. Anal)")
 
     override fun getFilterList() = FilterList(
         Types(),
@@ -201,6 +243,9 @@ class TMOHentai : ParsedHttpSource() {
         ContentFilter(),
         Filter.Separator(),
         SortBy(),
+        Filter.Separator(),
+        GroupFilter(),
+        TagFilter(),
         Filter.Separator(),
         GenreList(getGenreList()),
     )
@@ -279,6 +324,8 @@ class TMOHentai : ParsedHttpSource() {
     companion object {
         const val PREFIX_CONTENTS = "library/manga"
         const val PREFIX_ID_SEARCH = "id:"
+        const val PREFIX_GROUP_SEARCH = "group:"
+        const val PREFIX_TAG_SEARCH = "tag:"
 
         private val SORTABLES = listOf(
             Pair("Más populares", "likes_count"),
