@@ -203,7 +203,6 @@ class PayloadFiltersDto(
 class GenresStatusesDto(
     val genres: List<FilterDto>,
     val statuses: List<FilterDto>,
-    val teams: List<FilterDto> = emptyList(),
 )
 
 @Serializable
