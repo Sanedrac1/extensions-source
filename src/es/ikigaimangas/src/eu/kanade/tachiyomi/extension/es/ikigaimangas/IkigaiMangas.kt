@@ -1,6 +1,12 @@
 package eu.kanade.tachiyomi.extension.es.ikigaimangas
 
+import android.app.Application
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
@@ -21,16 +27,21 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
 import kotlinx.serialization.json.Json
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import rx.Observable
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class IkigaiMangas :
@@ -44,15 +55,15 @@ class IkigaiMangas :
         else -> preferences.prefBaseUrl
     }
 
-    private val defaultBaseUrl: String = "https://viralikigai.melauroral.com"
+    private val defaultBaseUrl: String = "https://zonaikigai.gamesview.shop"
 
     private val fetchedDomainUrl: String by lazy {
         if (!preferences.fetchDomainPref()) return@lazy preferences.prefBaseUrl
         try {
-            val initClient = network.cloudflareClient
+            val initClient = network.client
             val headers = super.headersBuilder().build()
             val document = initClient.newCall(GET("https://ikigaimangas.com", headers)).execute().asJsoup()
-            val scriptUrl = document.selectFirst("div[on:click]:containsOwn(Nuevo dominio)")?.attr("on:click")
+            val scriptUrl = document.selectFirst("div[on:click]:containsOwn(Ir al sitio)")?.attr("on:click")
                 ?: return@lazy preferences.prefBaseUrl
             val script = initClient.newCall(GET("https://ikigaimangas.com/build/$scriptUrl", headers)).execute().body.string()
             val domain = script.substringAfter("window.open(\"").substringBefore("\"")
@@ -76,7 +87,7 @@ class IkigaiMangas :
     override val supportsLatest: Boolean = true
 
     override val client by lazy {
-        network.cloudflareClient.newBuilder()
+        network.client.newBuilder()
             .rateLimitHost(fetchedDomainUrl.toHttpUrl(), 1, 2)
             .rateLimitHost(apiBaseUrl.toHttpUrl(), 2, 1)
             .addNetworkInterceptor(::nsfwCookieInterceptor)
@@ -147,7 +158,7 @@ class IkigaiMangas :
 
     override fun latestUpdatesParse(response: Response): MangasPage {
         val result = json.decodeFromString<PayloadLatestDto>(response.body.string())
-        val mangaList = result.data.filter { it.type == "comic" }.map { it.toSManga() }
+        val mangaList = result.data.filter { it.type == "comic" || it.type == "novel" }.map { it.toSManga() }
         return MangasPage(mangaList, result.hasNextPage())
     }
 
@@ -173,12 +184,17 @@ class IkigaiMangas :
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val sortByFilter = filters.firstInstanceOrNull<SortByFilter>()
+        val typeFilter = filters.firstInstanceOrNull<TypeFilter>()
 
         val apiUrl = "$apiBaseUrl/api/swf/series".toHttpUrl().newBuilder()
 
         apiUrl.addQueryParameter("page", page.toString())
-        apiUrl.addQueryParameter("type", "comic")
         apiUrl.addQueryParameter("nsfw", if (preferences.showNsfwPref) "true" else "false")
+
+        val typeVal = typeFilter?.selected ?: "comic"
+        if (typeVal.isNotEmpty()) {
+            apiUrl.addQueryParameter("type", typeVal)
+        }
 
         val genres = filters.firstInstanceOrNull<GenreFilter>()?.state.orEmpty()
             .filter(Genre::state)
@@ -190,8 +206,14 @@ class IkigaiMangas :
             .map(Status::id)
             .joinToString(",")
 
+        val teams = filters.firstInstanceOrNull<TeamFilter>()?.state.orEmpty()
+            .filter(Team::state)
+            .map(Team::id)
+            .joinToString(",")
+
         if (genres.isNotEmpty()) apiUrl.addQueryParameter("genres", genres)
         if (statuses.isNotEmpty()) apiUrl.addQueryParameter("status", statuses)
+        if (teams.isNotEmpty()) apiUrl.addQueryParameter("team", teams)
 
         apiUrl.addQueryParameter("column", sortByFilter?.selected ?: "name")
         apiUrl.addQueryParameter("direction", if (sortByFilter?.state?.ascending == true) "asc" else "desc")
@@ -199,48 +221,25 @@ class IkigaiMangas :
         return GET(apiUrl.build(), headers)
     }
 
-    val scriptUrlRegex = """from"(.*?\.js)"""".toRegex()
-    val seriesChunkRegex = """PUBLIC_BACKEND_API.*?"s_(.*?)"""".toRegex()
-
     private fun getQuerySeriesList(): List<QwikSeriesDto> {
         val baseUrl = preferences.prefBaseUrl
-        val homeDocument = client.newCall(GET(baseUrl, headers)).execute().asJsoup()
-        val mainScript =
-            homeDocument.selectFirst("input[type=search][on:input]")?.attr("on:input")
-                ?: throw Exception("No se pudo encontrar la lista de series.")
-
-        val mainScriptData =
-            client.newCall(GET("$baseUrl/build/$mainScript", headers)).execute().body.string()
-
-        val scriptsUrls = scriptUrlRegex.findAll(mainScriptData).map { it.groupValues[1] }.toList()
-
-        scriptsUrls.forEach {
-            val scriptData =
-                client.newCall(GET("$baseUrl/build/$it", headers)).execute().body.string()
-            val seriesChunkMatch = seriesChunkRegex.find(scriptData)
-            if (seriesChunkMatch != null) {
-                val chunkId = seriesChunkMatch.groupValues[1]
-                val url = "$baseUrl/series".toHttpUrl().newBuilder()
-                    .addQueryParameter("qfunc", chunkId)
-                    .build()
-                val payload = """{"_entry":"1","_objs":["\u0002_#s_$chunkId",["0"]]}"""
-                val body = payload.toRequestBody()
-                val headers = headersBuilder()
-                    .set("X-QRL", chunkId)
-                    .set("Content-Type", "application/qwik-json")
-                    .build()
-                val response = client.newCall(POST(url.toString(), headers, body)).execute()
-                return response.parseAs<QwikData>().parseAsList<QwikSeriesDto>()
-                    .also { series -> seriesCache = series }
-            }
-        }
-
-        throw Exception("No se pudo encontrar la lista de series.")
+        val qfunc = getQfuncFromWebView(baseUrl, headers) ?: throw Exception("Ocurrio un error al obtener la lista de series")
+        val url = baseUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("qfunc", qfunc)
+            .build()
+        val payload = """{"_entry":"1","_objs":["\u0002_#s_$qfunc",["0"]]}"""
+        val body = payload.toRequestBody()
+        val headers = headersBuilder()
+            .set("X-QRL", qfunc)
+            .set("Content-Type", "application/qwik-json")
+            .build()
+        val response = client.newCall(POST(url.toString(), headers, body)).execute()
+        return response.parseAs<QwikData>().parseAsList<QwikSeriesDto>().also { seriesCache = it }
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
         val result = json.decodeFromString<PayloadSeriesDto>(response.body.string())
-        val mangaList = result.data.filter { it.type == "comic" }.map { it.toSManga() }
+        val mangaList = result.data.filter { it.type == "comic" || it.type == "novel" }.map { it.toSManga() }
         return MangasPage(mangaList, result.hasNextPage())
     }
 
@@ -248,7 +247,7 @@ class IkigaiMangas :
         val nsfwEnabled = preferences.showNsfwPref
 
         val filteredSeries = seriesList
-            .filter { it.type == "comic" }
+            .filter { it.type == "comic" || it.type == "novel" }
             .filter { nsfwEnabled || !it.isMature }
             .filter { it.name.contains(query, ignoreCase = true) }
 
@@ -324,12 +323,14 @@ class IkigaiMangas :
             Filter.Header("Nota: Los filtros son ignorados si se realiza una búsqueda por texto."),
             Filter.Separator(),
             SortByFilter("Ordenar por", getSortProperties()),
+            TypeFilter("Tipo", getTypeProperties()),
         )
 
         filters += if (filtersState == FiltersState.FETCHED) {
             listOf(
                 StatusFilter("Estados", getStatusFilters()),
                 GenreFilter("Géneros", getGenreFilters()),
+                TeamFilter("Grupos", getTeamFilters()),
             )
         } else {
             listOf(
@@ -349,11 +350,19 @@ class IkigaiMangas :
         SortProperty("Número de vistas", "view_count"),
     )
 
+    private fun getTypeProperties(): List<Pair<String, String>> = listOf(
+        "Ambos" to "",
+        "Cómic" to "comic",
+        "Novela" to "novel",
+    )
+
     private fun getGenreFilters(): List<Genre> = genresList.map { Genre(it.first, it.second) }
     private fun getStatusFilters(): List<Status> = statusesList.map { Status(it.first, it.second) }
+    private fun getTeamFilters(): List<Team> = teamsList.map { Team(it.first, it.second) }
 
     private var genresList: List<Pair<String, Long>> = emptyList()
     private var statusesList: List<Pair<String, Long>> = emptyList()
+    private var teamsList: List<Pair<String, Long>> = emptyList()
     private var fetchFiltersAttempts = 0
     private var filtersState = FiltersState.NOT_FETCHED
 
@@ -368,6 +377,7 @@ class IkigaiMangas :
 
                 genresList = filters.data.genres.map { it.name.trim() to it.id }
                 statusesList = filters.data.statuses.map { it.name.trim() to it.id }
+                teamsList = filters.data.teams.map { it.name.trim() to it.id }
 
                 filtersState = FiltersState.FETCHED
             } catch (e: Throwable) {
@@ -439,6 +449,105 @@ class IkigaiMangas :
     private inline fun <reified R> List<*>.firstInstanceOrNull(): R? = filterIsInstance<R>().firstOrNull()
 
     private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
+
+    private fun getQfuncFromWebView(url: String, headers: Headers): String? {
+        val latch = CountDownLatch(1)
+        val handler = Handler(Looper.getMainLooper())
+        val pool = ('a'..'z') + ('A'..'Z')
+        val interfaceName = (1..(10..20).random())
+            .map { pool.random() }
+            .joinToString("")
+        var result: String? = null
+        var webView: WebView? = null
+        handler.post {
+            webView = WebView(Injekt.get<Application>()).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.blockNetworkImage = true
+                settings.userAgentString = headers["User-Agent"]
+                addJavascriptInterface(
+                    object {
+                        @Suppress("unused")
+                        @JavascriptInterface
+                        fun onQfunc(value: String) {
+                            result = value
+                            latch.countDown()
+                        }
+                    },
+                    interfaceName,
+                )
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView, loadedUrl: String) {
+                        super.onPageFinished(view, loadedUrl)
+                        injectFetchInterceptor(view, interfaceName)
+                        clickTargetButton(view)
+                    }
+                }
+                loadUrl(url)
+            }
+        }
+        latch.await(20, TimeUnit.SECONDS)
+        handler.post {
+            webView?.destroy()
+        }
+        return result
+    }
+
+    private fun injectFetchInterceptor(
+        webView: WebView,
+        interfaceName: String,
+    ) {
+        val script = """
+        (function () {
+            const originalFetch = window.fetch;
+            window.fetch = async function(resource, options) {
+                let url = "";
+                if (typeof resource === "string") {
+                    url = resource;
+                } else if (resource && resource.url) {
+                    url = resource.url;
+                }
+                if (url.includes("qfunc")) {
+                    const match = url.match(/[?&]qfunc=([^&]+)/);
+                    if (match) {
+                        const qfunc = decodeURIComponent(match[1]);
+                        window.$interfaceName.onQfunc(qfunc);
+                    }
+                }
+                return originalFetch.apply(this, arguments);
+            };
+        })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script, null)
+    }
+
+    private fun clickTargetButton(webView: WebView) {
+        val script = """
+        (function () {
+            let tries = 0;
+            const interval = setInterval(() => {
+                const btn = [...document.querySelectorAll('button')]
+                    .find(button =>
+                        [...button.querySelectorAll('span')]
+                            .some(span =>
+                                span.textContent?.trim().includes('Buscar...')
+                            )
+                    );
+                if (btn) {
+                    clearInterval(interval);
+                    btn.click();
+                    return;
+                }
+                tries++;
+                if (tries >= 20) {
+                    clearInterval(interval);
+                }
+            }, 500);
+        })();
+        """.trimIndent()
+        webView.evaluateJavascript(script, null)
+    }
 
     companion object {
         private const val SHOW_NSFW_PREF = "pref_show_nsfw"
