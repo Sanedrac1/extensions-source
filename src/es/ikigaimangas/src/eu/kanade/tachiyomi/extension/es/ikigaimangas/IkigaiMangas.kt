@@ -185,39 +185,42 @@ class IkigaiMangas :
         val sortByFilter = filters.firstInstanceOrNull<SortByFilter>()
         val typeFilter = filters.firstInstanceOrNull<TypeFilter>()
 
-        val apiUrl = "$apiBaseUrl/api/swf/series".toHttpUrl().newBuilder()
+        val apiUrl = "$baseUrl/series/".toHttpUrl().newBuilder()
 
-        apiUrl.addQueryParameter("page", page.toString())
-        apiUrl.addQueryParameter("nsfw", if (preferences.showNsfwPref) "true" else "false")
+        apiUrl.addQueryParameter("pagina", page.toString())
 
-        val typeVal = typeFilter?.selected ?: "comic"
+        val typeVal = typeFilter?.selected ?: ""
         if (typeVal.isNotEmpty()) {
-            apiUrl.addQueryParameter("type", typeVal)
+            apiUrl.addQueryParameter("tipo_filter", typeVal)
         }
 
         val genres = filters.firstInstanceOrNull<GenreFilter>()?.state.orEmpty()
             .filter(Genre::state)
             .map(Genre::id)
-            .joinToString(",")
+
+        genres.forEach { id ->
+            apiUrl.addQueryParameter("generos[]", id.toString())
+        }
 
         val statuses = filters.firstInstanceOrNull<StatusFilter>()?.state.orEmpty()
             .filter(Status::state)
             .map(Status::id)
-            .joinToString(",")
 
-        val teams = filters.firstInstanceOrNull<TeamFilter>()?.state.orEmpty()
-            .filter(Team::state)
-            .map(Team::id)
-            .joinToString(",")
+        statuses.forEach { id ->
+            apiUrl.addQueryParameter("estados[]", id.toString())
+        }
 
-        if (genres.isNotEmpty()) apiUrl.addQueryParameter("genres", genres)
-        if (statuses.isNotEmpty()) apiUrl.addQueryParameter("status", statuses)
-        if (teams.isNotEmpty()) apiUrl.addQueryParameter("team", teams)
+        val sortBy = sortByFilter?.selected ?: "name"
+        if (sortBy != "name") {
+            apiUrl.addQueryParameter("ordenar", sortBy)
+        }
 
-        apiUrl.addQueryParameter("column", sortByFilter?.selected ?: "name")
-        apiUrl.addQueryParameter("direction", if (sortByFilter?.state?.ascending == true) "asc" else "desc")
+        val headersBuilder = headersBuilder()
+        if (preferences.showNsfwPref) {
+            headersBuilder.add("X-Add-Nsfw-Cookie", "1")
+        }
 
-        return GET(apiUrl.build(), headers)
+        return GET(apiUrl.build(), headersBuilder.build())
     }
 
     private fun getQuerySeriesList(): List<QwikSeriesDto> {
@@ -237,9 +240,49 @@ class IkigaiMangas :
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val result = json.decodeFromString<PayloadSeriesDto>(response.body.string())
-        val mangaList = result.data.filter { it.type == "comic" || it.type == "novel" }.map { it.toSManga() }
-        return MangasPage(mangaList, result.hasNextPage())
+        val url = response.request.url.toString()
+        if (url.contains("/api/swf/")) {
+            val result = json.decodeFromString<PayloadSeriesDto>(response.body.string())
+            val mangaList = result.data.filter { it.type == "comic" || it.type == "novel" }.map { it.toSManga() }
+            return MangasPage(mangaList, result.hasNextPage())
+        }
+
+        val document = response.asJsoup()
+        val grid = document.selectFirst("section.container ul.grid") ?: return MangasPage(emptyList(), false)
+        val cards = grid.select("> li")
+
+        val requestUrl = response.request.url
+        val typeFilter = requestUrl.queryParameter("tipo_filter")
+
+        val mangaList = cards.mapNotNull { card ->
+            val a = card.selectFirst("a.card") ?: return@mapNotNull null
+            val href = a.attr("href")
+            val slug = href.removePrefix("/series/").removeSuffix("/")
+            val id = card.attr("q:key").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+
+            val img = a.selectFirst("img") ?: return@mapNotNull null
+            val title = img.attr("alt").trim()
+            val coverUrl = img.attr("src")
+
+            val typeText = a.selectFirst("figure div.badge")?.text()?.lowercase() ?: "comic"
+            val typeVal = if (typeText.contains("novel")) "novel" else "comic"
+
+            if (typeFilter != null && typeFilter.isNotEmpty() && typeVal != typeFilter) {
+                return@mapNotNull null
+            }
+
+            SManga.create().apply {
+                this.url = "/series/comic-$slug#$id"
+                this.title = title
+                this.thumbnail_url = coverUrl
+            }
+        }
+
+        val currentPage = requestUrl.queryParameter("pagina")?.toIntOrNull() ?: 1
+        val nextPageLink = document.selectFirst("a[href*=\"pagina=${currentPage + 1}\"]")
+        val hasNextPage = nextPageLink != null
+
+        return MangasPage(mangaList, hasNextPage)
     }
 
     private fun qwikDataParse(query: String, seriesList: List<QwikSeriesDto>, page: Int): MangasPage {
