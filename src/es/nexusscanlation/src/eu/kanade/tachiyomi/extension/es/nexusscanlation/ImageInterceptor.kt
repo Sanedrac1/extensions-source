@@ -47,15 +47,16 @@ class ImageInterceptor : Interceptor {
 
         val buffer = Buffer()
 
+        @Suppress("DEPRECATION")
         decoded.compress(
-            Bitmap.CompressFormat.PNG,
+            Bitmap.CompressFormat.WEBP,
             90,
             buffer.outputStream(),
         )
         decoded.recycle()
 
         return response.newBuilder()
-            .body(buffer.asResponseBody("image/png".toMediaType()))
+            .body(buffer.asResponseBody("image/webp".toMediaType()))
             .build()
     }
 
