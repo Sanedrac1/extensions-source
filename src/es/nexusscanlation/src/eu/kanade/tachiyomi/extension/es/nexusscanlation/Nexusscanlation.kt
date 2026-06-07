@@ -46,6 +46,7 @@ class Nexusscanlation :
 
     override val client: OkHttpClient = network.client.newBuilder()
         .addInterceptor(::authInterceptor)
+        .addInterceptor(ImageInterceptor())
         .build()
 
     override fun headersBuilder(): Headers.Builder {
@@ -318,7 +319,18 @@ class Nexusscanlation :
             .mapIndexed { index, page ->
                 // Reemplazo dinámico de forma eficiente
                 val fixedUrl = page.url.replace(r2Regex, "https://cdn.nexusscanlation.com")
-                Page(index, imageUrl = fixedUrl)
+                val imageUrl = buildString {
+                    append(fixedUrl)
+                    page.scrambledData?.let {
+                        append("#scramble=")
+                        append(it.columns)
+                        append(',')
+                        append(it.rows)
+                        append(',')
+                        append(it.seed)
+                    }
+                }
+                Page(index, imageUrl = imageUrl)
             }
             .toList()
     }
