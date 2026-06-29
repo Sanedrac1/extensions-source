@@ -14,6 +14,7 @@ import keiyoushi.network.rateLimit
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.tryParse
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Element
@@ -29,6 +30,7 @@ abstract class FalcoScan : HttpSource() {
     private val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale("es"))
 
     override val client = network.client.newBuilder()
+        .protocols(listOf(Protocol.HTTP_1_1))
         .rateLimit(3) { it.host == baseUrlHost }
         .build()
 
@@ -139,9 +141,32 @@ abstract class FalcoScan : HttpSource() {
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
+        val canvases = document.select("div.page-content div.img-blade canvas.cap-canvas")
+        if (canvases.isNotEmpty()) {
+            return canvases.mapIndexed { i, element ->
+                val src = element.absUrl("data-src")
+                val token = element.attr("data-token")
+                Page(i, imageUrl = "$src#$token")
+            }
+        }
+
         return document.select("div.page-content div.img-blade img").mapIndexed { i, element ->
             Page(i, imageUrl = element.imgAttr())
         }
+    }
+
+    override fun imageRequest(page: Page): Request {
+        val imageUrl = page.imageUrl!!
+        if (imageUrl.contains("#")) {
+            val token = imageUrl.substringAfterLast("#")
+            val cleanUrl = imageUrl.substringBeforeLast("#")
+            val imageHeaders = headersBuilder()
+                .add("X-Requested-With", "XMLHttpRequest")
+                .add("X-CSRF-TOKEN", token)
+                .build()
+            return GET(cleanUrl, imageHeaders)
+        }
+        return super.imageRequest(page)
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
