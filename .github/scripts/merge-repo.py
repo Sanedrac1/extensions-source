@@ -37,7 +37,47 @@ shutil.copytree(
 )
 
 with REMOTE_REPO.joinpath("index.json").open() as f:
-    remote_proto = json_format.Parse(f.read(), index_pb2.Index())
+    raw_content = f.read()
+    try:
+        remote_proto = json_format.Parse(raw_content, index_pb2.Index())
+    except Exception as e:
+        try:
+            legacy_data = json.loads(raw_content)
+            if isinstance(legacy_data, list):
+                extensions_list = []
+                for item in legacy_data:
+                    sources = []
+                    for s in item.get("sources", []):
+                        sources.append(index_pb2.Source(
+                            id=int(s["id"]),
+                            name=s["name"],
+                            language=s["lang"],
+                            homeUrl=s.get("baseUrl", "")
+                        ))
+                    
+                    apk_name = item["apk"]
+                    extensions_list.append(index_pb2.Extension(
+                        name=item["name"].replace("Tachiyomi: ", ""),
+                        packageName=item["pkg"],
+                        versionName=item["version"],
+                        versionCode=item["code"],
+                        contentWarning=3 if item.get("nsfw", 0) == 1 else 0,
+                        resources=index_pb2.ExtensionResources(
+                            apkUrl=f"https://raw.githubusercontent.com/Sanedrac1/extensions/refs/heads/repo/apk/{apk_name}",
+                            iconUrl=f"https://raw.githubusercontent.com/Sanedrac1/extensions/refs/heads/repo/icon/{item['pkg']}.png"
+                        ),
+                        sources=sources
+                    ))
+                remote_proto = index_pb2.Index(
+                    name="Sanedrac1",
+                    badgeLabel="SAN",
+                    extensionList=index_pb2.ExtensionList(extensions=extensions_list)
+                )
+            else:
+                raise e
+        except Exception as e2:
+            print(f"Failed to parse legacy index, starting fresh: {e2}")
+            remote_proto = index_pb2.Index()
 
 with LOCAL_REPO.joinpath("index.json").open() as f:
     local_proto = json_format.Parse(f.read(), index_pb2.ExtensionList())
