@@ -12,8 +12,6 @@ keiyoushi {
     source {
         lang = "es"
         baseUrl = "https://tmohentai.app"
-        host("tmohentai.app")
-        host("tmohentai.com")
     }
 
     deeplink {
