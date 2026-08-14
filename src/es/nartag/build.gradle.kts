@@ -1,11 +1,13 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Rncalation"
-    versionCode = 60
-    contentWarning = ContentWarning.NSFW
+    versionCode = 64
+    contentWarning = ContentWarning.MIXED
     libVersion = "1.4"
 
     source {

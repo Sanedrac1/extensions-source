@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Lycan Toons"
-    versionCode = 6
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "1.4"
 

@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "MangaHub"
-    className = "MangaHubIo"
     versionCode = 10
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
     theme = "mangahub"
-    baseUrl = "https://mangahub.io"
+
+    source {
+        lang = "en"
+        baseUrl = "https://mangahub.io"
+    }
 }

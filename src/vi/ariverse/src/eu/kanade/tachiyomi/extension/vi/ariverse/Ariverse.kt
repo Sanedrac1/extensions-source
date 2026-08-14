@@ -1,216 +1,113 @@
 package eu.kanade.tachiyomi.extension.vi.ariverse
 
-import android.annotation.SuppressLint
-import android.app.Application
 import android.content.SharedPreferences
-import android.os.Handler
-import android.os.Looper
-import android.webkit.JavascriptInterface
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.preference.CheckBoxPreference
-import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.get
 import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.array
+import keiyoushi.utils.get
+import keiyoushi.utils.getLocalStorage
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.string
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Interceptor
-import okhttp3.Request
-import okhttp3.Response
+import okhttp3.OkHttpClient
 import org.jsoup.Jsoup
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import kotlin.time.Instant
 
-class Ariverse :
-    HttpSource(),
+@Source
+abstract class Ariverse :
+    KeiSource(),
     ConfigurableSource {
-
-    override val name = "Ariverse"
-
-    override val lang = "vi"
-
-    private val defaultBaseUrl = "https://arigl.xyz"
-
-    override val baseUrl get() = getPrefBaseUrl()
 
     private val apiUrl get() = baseUrl.replace("https://", "https://be.") + "/api/v1"
 
     private val imageUrl get() = baseUrl.replace("https://", "https://img.")
 
-    override val supportsLatest = true
-
-    override val id: Long = 4480433466073326866
-
-    private val preferences: SharedPreferences = getPreferences {
-        getString(DEFAULT_BASE_URL_PREF, null).let { prefDefaultBaseUrl ->
-            if (prefDefaultBaseUrl != defaultBaseUrl) {
-                edit()
-                    .putString(BASE_URL_PREF, defaultBaseUrl)
-                    .putString(DEFAULT_BASE_URL_PREF, defaultBaseUrl)
-                    .apply()
-            }
-        }
-    }
-
-    private var cachedAuthToken: String? = null
-
-    private val webViewUserAgent: String? by lazy {
-        runCatching { WebSettings.getDefaultUserAgent(Injekt.get<Application>()) }
-            .getOrNull()
-            ?.let { it.replace(WEBVIEW_TOKEN_REGEX, ")") }
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    override val client = network.client.newBuilder()
-        .addInterceptor(authInterceptor())
-        .rateLimit(3)
-        .build()
-
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
-        .add("Accept", "application/json")
-        .apply { webViewUserAgent?.let { set("User-Agent", it) } }
-
-    private fun apiHeaders() = headersBuilder().apply {
-        authToken?.let { set("Authorization", "Bearer $it") }
-    }.build()
+    private val preferences: SharedPreferences = getPreferences()
 
     private val allowR18 get() = preferences.getBoolean("pref_r18", false)
 
+    // ============================== Client ================================
+
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = apply {
+        addInterceptor(authInterceptor())
+        rateLimit(3)
+    }
+
     // ============================== Auth ====================================
 
-    private val authToken: String?
-        @Synchronized
-        get() = cachedAuthToken
-            ?: getTokenFromWebView()?.also { cachedAuthToken = it }
+    private var cachedAuthToken: String? = null
+    private var authChecked = false
 
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-    private fun getTokenFromWebView(): String? {
-        val handler = Handler(Looper.getMainLooper())
-        val latch = CountDownLatch(1)
-        val interfaceName = randomJavascriptInterfaceName()
-        val bridge = TokenBridge(latch)
-        var webView: WebView? = null
-
-        handler.post {
-            webView = WebView(Injekt.get<Application>()).apply {
-                with(settings) {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    databaseEnabled = true
-                    blockNetworkImage = true
-                    webViewUserAgent?.let { userAgentString = it }
-                }
-                addJavascriptInterface(bridge, interfaceName)
-                webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        view?.evaluateJavascript(
-                            """
-                            (function() {
-                                try {
-                                    var token = localStorage.getItem('token');
-                                    window['$interfaceName'].onToken(token || '');
-                                } catch(e) {
-                                    window['$interfaceName'].onToken('');
-                                }
-                            })();
-                            """.trimIndent(),
-                            null,
-                        )
-                    }
-                }
-                loadDataWithBaseURL(baseUrl, " ", "text/html", "UTF-8", null)
-            }
-        }
-
-        latch.await(10, TimeUnit.SECONDS)
-
-        handler.post {
-            webView?.removeJavascriptInterface(interfaceName)
-            webView?.destroy()
-        }
-
-        return bridge.token?.takeIf { it.isNotBlank() }
+    private suspend fun loadAuthToken() {
+        if (authChecked) return
+        authChecked = true
+        cachedAuthToken = getLocalStorage(baseUrl, "token")
+            ?.takeIf { it.isNotBlank() }
     }
 
-    private class TokenBridge(private val latch: CountDownLatch) {
-        @Volatile
-        var token: String? = null
-
-        @JavascriptInterface
-        fun onToken(value: String?) {
-            token = value
-            latch.countDown()
-        }
-    }
-
-    private fun authInterceptor() = Interceptor { chain ->
+    private fun authInterceptor() = okhttp3.Interceptor { chain ->
         val original = chain.request()
-        val token = authToken
-
-        val request = if (token != null) {
-            original.newBuilder()
-                .header("Authorization", "Bearer $token")
-                .build()
-        } else {
-            original
-        }
-
+        val request = original.newBuilder().apply {
+            cachedAuthToken?.let { header("Authorization", "Bearer $it") }
+            if (original.url.encodedPath.startsWith("/api/")) {
+                header("Accept", "application/json")
+            }
+        }.build()
         chain.proceed(request)
-    }
-
-    private fun randomJavascriptInterfaceName(): String {
-        val pool = ('a'..'z') + ('A'..'Z')
-        return (1..(10..20).random())
-            .map { pool.random() }
-            .joinToString("")
     }
 
     // ============================== Popular ===============================
 
-    override fun popularMangaRequest(page: Int): Request {
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        loadAuthToken()
         val url = "$apiUrl/stories/hot".toHttpUrl().newBuilder()
             .addQueryParameter("type", "comic")
             .addQueryParameter("is_18_plus", if (allowR18) "1" else "0")
             .addQueryParameter("limit", "50")
             .addQueryParameter("period", "week")
             .build()
-        return GET(url, apiHeaders())
-    }
+        val result = client.get(url).parseAs<HotStoryListResponse>()
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val result = response.parseAs<HotStoryListResponse>()
-
-        val mangas = result.data.map { story ->
-            SManga.create().apply {
-                url = "/comic/story/${story.slug}"
-                title = story.title
-                thumbnail_url = story.coverPath?.let { resolveCoverUrl(it) }
-            }
-        }
+        val mangas = result.data.map { createManga(it) }
 
         return MangasPage(mangas, false)
     }
 
+    private fun createManga(story: Story): SManga = SManga.create().apply {
+        setUrlWithoutDomain("/comic/story/${story.slug}")
+        title = story.title
+        thumbnail_url = story.coverPath?.let { resolveCoverUrl(it) }
+    }
+
+    private fun resolveCoverUrl(coverPath: String): String {
+        if (coverPath.startsWith("http://") || coverPath.startsWith("https://")) {
+            return coverPath
+        }
+        return "$imageUrl/${coverPath.replace("\\", "/")}"
+    }
+
     // ============================== Latest ================================
 
-    override fun latestUpdatesRequest(page: Int): Request {
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        loadAuthToken()
         val url = "$apiUrl/stories".toHttpUrl().newBuilder()
             .addQueryParameter("type", "comic")
             .addQueryParameter("is_18_plus", if (allowR18) "1" else "0")
@@ -219,14 +116,18 @@ class Ariverse :
             .addQueryParameter("per_page", "50")
             .addQueryParameter("page", page.toString())
             .build()
-        return GET(url, apiHeaders())
+        val result = client.get(url).parseAs<StoryListResponse>()
+        return parseMangaPage(result)
     }
-
-    override fun latestUpdatesParse(response: Response): MangasPage = parseMangaPage(response)
 
     // ============================== Search ================================
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(
+        page: Int,
+        query: String,
+        filters: FilterList,
+    ): MangasPage {
+        loadAuthToken()
         val url = "$apiUrl/stories".toHttpUrl().newBuilder().apply {
             addQueryParameter("type", "comic")
             addQueryParameter("is_18_plus", if (allowR18) "1" else "0")
@@ -259,44 +160,27 @@ class Ariverse :
             }
         }.build()
 
-        return GET(url, apiHeaders())
+        val result = client.get(url).parseAs<StoryListResponse>()
+        return parseMangaPage(result)
     }
 
-    override fun searchMangaParse(response: Response): MangasPage = parseMangaPage(response)
-
-    private fun parseMangaPage(response: Response): MangasPage {
-        val result = response.parseAs<StoryListResponse>()
-
-        val mangas = result.data.map { story ->
-            SManga.create().apply {
-                url = "/comic/story/${story.slug}"
-                title = story.title
-                thumbnail_url = story.coverPath?.let { resolveCoverUrl(it) }
-            }
-        }
+    private fun parseMangaPage(result: StoryListResponse): MangasPage {
+        val mangas = result.data.map { createManga(it) }
 
         val hasNextPage = result.currentPage < result.lastPage
 
         return MangasPage(mangas, hasNextPage)
     }
 
-    // ============================== Filters ===============================
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        loadAuthToken()
+        val slug = url.pathSegments.lastOrNull() ?: return null
 
-    override fun getFilterList(): FilterList = getFilters()
-
-    // ============================== Details ===============================
-
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        val slug = manga.url.substringAfterLast("/")
-        val url = "$apiUrl/stories/$slug".toHttpUrl()
-        return GET(url, apiHeaders())
-    }
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val story = response.parseAs<StoryDetailResponse>().data
+        val story = client.get("$apiUrl/stories/$slug")
+            .parseAs<StoryDetailResponse>().data
 
         return SManga.create().apply {
-            url = "/comic/story/${story.slug}"
+            setUrlWithoutDomain("/comic/story/$slug")
             title = story.title
             thumbnail_url = story.coverPath?.let { resolveCoverUrl(it) }
             author = story.author
@@ -304,24 +188,32 @@ class Ariverse :
             description = story.description?.let { parseDescription(it) }
             genre = story.genres?.joinToString { it.name }
             status = parseStatus(story.status)
+            initialized = true
         }
     }
 
-    private fun resolveCoverUrl(coverPath: String): String {
-        if (coverPath.startsWith("http://") || coverPath.startsWith("https://")) {
-            return coverPath
-        }
-        return "$imageUrl/${coverPath.replace("\\", "/")}"
+    // ============================== Filters ===============================
+
+    override val supportsFilterFetching get() = true
+
+    override suspend fun fetchFilterData(): JsonElement = client.get("$apiUrl/genres").parseAs<JsonElement>()
+
+    override fun getFilterList(data: JsonElement?): FilterList {
+        val genres = data["data"]?.array
+            ?: return buildGenreFilter(null)
+        return buildGenreFilter(genres)
     }
+
+    // ============================== Details + Chapters ====================
 
     private fun parseDescription(html: String): String {
         val normalized = html
-            .replace(BR_TAG_REGEX, "\n")
+            .replace(brTagRegex, "\n")
             .replace("&nbsp;", " ")
 
         return Jsoup.parse(normalized).wholeText()
-            .replace(HORIZONTAL_SPACE_REGEX, " ")
-            .replace(MULTI_NEWLINE_REGEX, "\n")
+            .replace(horizontalSpaceRegex, " ")
+            .replace(multiNewlineRegex, "\n")
     }
 
     private fun parseStatus(status: String?): Int = when {
@@ -331,44 +223,88 @@ class Ariverse :
         else -> SManga.UNKNOWN
     }
 
-    // ============================== Chapters ==============================
+    override fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
 
-    override fun chapterListRequest(manga: SManga): Request {
+    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        loadAuthToken()
         val slug = manga.url.substringAfterLast("/")
-        val url = "$apiUrl/stories/$slug/chapters".toHttpUrl()
-        return GET(url, apiHeaders())
-    }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val chapterData = response.parseAs<ChapterListResponse>().data
+        val updatedManga: SManga
+        val updatedChapters: List<SChapter>
 
-        return chapterData.chapters
-            .sortedByDescending { it.number }
-            .map { chapter ->
-                SChapter.create().apply {
-                    url = "/comic/story/${chapterData.story.slug}/${chapter.slug}"
-                    name = chapter.title
-                    chapter_number = chapter.number.toFloat()
-                    date_upload = chapter.publishedAt?.let { DATE_FORMAT.tryParse(it) } ?: 0L
+        coroutineScope {
+            val mangaDeferred = if (fetchDetails) {
+                async {
+                    val story = client.get("$apiUrl/stories/$slug")
+                        .parseAs<StoryDetailResponse>().data
+
+                    SManga.create().apply {
+                        setUrlWithoutDomain("/comic/story/${story.slug}")
+                        title = story.title
+                        thumbnail_url = story.coverPath?.let { resolveCoverUrl(it) }
+                        author = story.author
+                        artist = story.artist
+                        description = story.description?.let { parseDescription(it) }
+                        genre = story.genres?.joinToString { it.name }
+                        status = parseStatus(story.status)
+                        memo = buildJsonObject {
+                            story.genres?.firstOrNull()?.slug?.let { put("genreSlug", JsonPrimitive(it)) }
+                        }
+                    }
                 }
+            } else {
+                null
             }
+
+            val chaptersDeferred = if (fetchChapters) {
+                async {
+                    val chapterData = client.get("$apiUrl/stories/$slug/chapters")
+                        .parseAs<ChapterListResponse>().data
+
+                    chapterData.chapters
+                        .sortedByDescending { it.number }
+                        .map { chapter ->
+                            SChapter.create().apply {
+                                setUrlWithoutDomain("/comic/story/${chapterData.story.slug}/${chapter.slug}")
+                                name = chapter.title ?: "${chapter.number.toInt()}"
+                                chapter_number = chapter.number.toFloat()
+                                date_upload = chapter.publishedAt?.let { Instant.parseOrNull(it)?.toEpochMilliseconds() } ?: 0L
+                            }
+                        }
+                }
+            } else {
+                null
+            }
+
+            updatedManga = mangaDeferred?.await() ?: manga
+            updatedChapters = chaptersDeferred?.await() ?: chapters
+        }
+
+        return SMangaUpdate(
+            manga = updatedManga,
+            chapters = updatedChapters,
+        )
     }
 
     // ============================== Pages =================================
 
-    override fun pageListRequest(chapter: SChapter): Request {
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        loadAuthToken()
         val parts = chapter.url.trim('/').split("/")
         val storySlug = parts.getOrElse(2) { "" }
         val chapterSlug = parts.getOrElse(3) { "" }
         val url = "$apiUrl/stories/$storySlug/chapters/$chapterSlug".toHttpUrl()
-        return GET(url, apiHeaders())
-    }
-
-    override fun pageListParse(response: Response): List<Page> {
-        val chapterDetail = response.parseAs<ChapterDetailResponse>().data
+        val chapterDetail = client.get(url).parseAs<ChapterDetailResponse>().data
 
         if (chapterDetail.contentLocked) {
-            throw Exception(LOGIN_WEBVIEW_MESSAGE)
+            throw Exception(loginWebviewMessage)
         }
 
         val content = chapterDetail.content.orEmpty()
@@ -382,20 +318,34 @@ class Ariverse :
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+    // ============================== Related ===============================
+
+    override val supportsRelatedMangas get() = true
+
+    override suspend fun fetchRelatedMangaList(manga: SManga): List<SManga> {
+        val slug = manga.url.substringAfterLast("/")
+        val genreSlug = manga.memo["genreSlug"]?.string
+            ?: client.get("$apiUrl/stories/$slug")
+                .parseAs<StoryDetailResponse>().data.genres?.firstOrNull()?.slug
+            ?: return emptyList()
+
+        val result = client.get(
+            "$apiUrl/stories".toHttpUrl().newBuilder()
+                .addQueryParameter("type", "comic")
+                .addQueryParameter("genre", genreSlug)
+                .addQueryParameter("per_page", "12")
+                .addQueryParameter("page", "1")
+                .build(),
+        ).parseAs<StoryListResponse>()
+
+        return result.data
+            .filter { it.slug != slug }
+            .map { createManga(it) }
+    }
 
     // ============================== Settings ==============================
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = BASE_URL_PREF
-            title = BASE_URL_PREF_TITLE
-            summary = BASE_URL_PREF_SUMMARY
-            setDefaultValue(defaultBaseUrl)
-            dialogTitle = BASE_URL_PREF_TITLE
-            dialogMessage = "Default: $defaultBaseUrl"
-        }.let(screen::addPreference)
-
         CheckBoxPreference(screen.context).apply {
             key = "pref_r18"
             title = "Hiển thị nội dung 18+"
@@ -404,25 +354,9 @@ class Ariverse :
         }.let(screen::addPreference)
     }
 
-    private fun getPrefBaseUrl(): String = preferences.getString(BASE_URL_PREF, defaultBaseUrl)!!
+    private val brTagRegex = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+    private val horizontalSpaceRegex = Regex("[\\t\\x0B\\f\\r ]+")
+    private val multiNewlineRegex = Regex("\\n{2,}")
 
-    companion object {
-        private val BR_TAG_REGEX = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
-        private val HORIZONTAL_SPACE_REGEX = Regex("[\\t\\x0B\\f\\r ]+")
-        private val MULTI_NEWLINE_REGEX = Regex("\\n{2,}")
-
-        private val DATE_FORMAT by lazy {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
-                timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
-            }
-        }
-
-        private val WEBVIEW_TOKEN_REGEX = Regex(""";\s*wv\)""")
-
-        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
-        private const val BASE_URL_PREF = "overrideBaseUrl"
-        private const val BASE_URL_PREF_TITLE = "Ghi đè URL cơ sở"
-        private const val BASE_URL_PREF_SUMMARY = "Dành cho sử dụng tạm thời, cập nhật tiện ích sẽ xóa cài đặt."
-        private const val LOGIN_WEBVIEW_MESSAGE = "Vui lòng đăng nhập vào tài khoản phù hợp qua Webview để đọc chương này"
-    }
+    private val loginWebviewMessage = "Vui lòng đăng nhập vào tài khoản phù hợp qua Webview để đọc chương này"
 }

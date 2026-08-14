@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "MangaHere.onl"
-    className = "MangaHereOnl"
     versionCode = 0
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
     theme = "mangahub"
-    baseUrl = "https://mangahere.onl"
+
+    source {
+        lang = "en"
+        baseUrl = "https://mangahere.onl"
+    }
 }

@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Maid - Manga"
-    className = "MaidManga"
     versionCode = 10
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
     theme = "zmanga"
-    baseUrl = "https://www.maid.my.id"
+
+    source {
+        lang = "id"
+        baseUrl = "https://www.maid.my.id"
+    }
 }

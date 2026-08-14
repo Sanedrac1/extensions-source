@@ -1,13 +1,27 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "ManHuaGui"
-    className = "Manhuagui"
     versionCode = 28
-    contentWarning = ContentWarning.NSFW
+    contentWarning = ContentWarning.MIXED
     libVersion = "1.4"
+
+    source {
+        name = "漫画柜"
+        lang = "zh"
+        baseUrl {
+            mirrors(
+                "https://www.manhuagui.com",
+                "https://tw.manhuagui.com",
+                "https://www.mhgui.com",
+                "https://tw.mhgui.com",
+            )
+        }
+    }
 
     deeplink {
         host("manhuagui.com")

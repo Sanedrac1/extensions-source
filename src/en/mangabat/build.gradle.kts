@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Mangabat"
-    className = "Mangabat"
-    versionCode = 7
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    versionCode = 8
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
     theme = "mangabox"
-    baseUrl = "https://www.mangabats.com"
+
+    source {
+        lang = "en"
+        baseUrl = "https://www.mangabats.com"
+    }
 }

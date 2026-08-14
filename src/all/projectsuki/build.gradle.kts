@@ -1,31 +1,29 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Project Suki"
-    className = "ProjectSuki"
-    versionCode = 8
+    versionCode = 9
     contentWarning = ContentWarning.SAFE
     libVersion = "1.4"
+
+    source {
+        lang = "all"
+        baseUrl = "https://projectsuki.com"
+        id = 8965918600406781666L
+    }
 
     deeplink {
         host("projectsuki.com")
         path("/search.*")
-    }
-
-    deeplink {
-        host("projectsuki.com")
         path("/book/.*")
-    }
-
-    deeplink {
-        host("projectsuki.com")
         path("/read/.*")
     }
 }
 
 dependencies {
-
     implementation(project(":lib:randomua"))
 }

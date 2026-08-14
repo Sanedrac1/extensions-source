@@ -6,6 +6,7 @@ import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.annotation.Source
 import okhttp3.OkHttpClient
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -14,25 +15,20 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.time.Duration.Companion.minutes
 
-class Kaguya :
-    Madara(
-        "Kaguya",
-        "https://v1.kaguya.pro",
-        "id",
-        dateFormat = SimpleDateFormat("d MMMM", Locale("en")),
-    ) {
+@Source
+abstract class Kaguya : Madara() {
+    override val dateFormat = SimpleDateFormat("d MMMM", Locale("en"))
 
     override val client: OkHttpClient = super.client.newBuilder()
         .readTimeout(1.minutes)
         .build()
 
-    override val id = 1557304490417397104
-
-    override val mangaSubString = "all-series"
+    // Fixed: Set to "series" to match https://02.kaguya.pro/series/...
+    override val mangaSubString = "series"
 
     override val mangaDetailsSelectorTitle = "h1.post-title"
     override val mangaDetailsSelectorStatus = "div.summary-heading:contains(Status) + div"
-    override val mangaDetailsSelectorThumbnail = "head meta[property='og:image']" // Same as browse
+    override val mangaDetailsSelectorThumbnail = "head meta[property='og:image']"
 
     override fun imageFromElement(element: Element): String? {
         if (element.hasAttr("data-aesir")) {
@@ -42,7 +38,7 @@ class Kaguya :
 
         return super.imageFromElement(element)
             ?.takeIf { it.isNotEmpty() }
-            ?: element.attr("content") // Thumbnail from <head>
+            ?: element.attr("content")
     }
 
     // ============================== Chapters ==============================

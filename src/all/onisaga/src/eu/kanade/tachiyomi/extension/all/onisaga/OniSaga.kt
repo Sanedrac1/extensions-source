@@ -6,7 +6,6 @@ import androidx.preference.MultiSelectListPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -14,89 +13,72 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import keiyoushi.network.post
 import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
-import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.string
 import keiyoushi.utils.toJsonRequestBody
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Interceptor
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import rx.Observable
+import org.jsoup.nodes.Element
 
-class OniSaga(
-    override val lang: String,
-    private val langKey: String?,
-) : HttpSource(),
+@Source
+abstract class OniSaga :
+    KeiSource(),
     ConfigurableSource {
 
-    override val name = "OniSaga"
-    override val baseUrl = "https://onisaga.com"
-    override val supportsLatest = true
+    // Returns the uppercase language code required by the Livewire updates payload
+    private val langCode: String? get() = when (lang) {
+        "en" -> "EN"
+        "fr" -> "FR"
+        "ja" -> "JA"
+        "pt-BR" -> "PT-BR"
+        "pt" -> "PT"
+        "es-419" -> "ES-LA"
+        "es" -> "ES"
+        else -> null
+    }
 
     private val livewireJson = Json {
         encodeDefaults = true
     }
 
-    override val client: OkHttpClient = network.client.newBuilder()
-        .rateLimit(4)
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        rateLimit(4)
+    }
 
     @Volatile private var cachedStateUrl: String? = null
 
     @Volatile private var cachedState: LivewireState? = null
 
-    private val apiLock = Any()
+    private val apiLock = Mutex()
 
     @Volatile private var lastRequestTime = 0L
 
-    private val strictApiInterceptor = Interceptor { chain ->
-        synchronized(apiLock) {
-            val rateLimitDelay = preferences.getString(PREF_RATE_LIMIT_KEY, "2000")?.toLongOrNull() ?: 2000L
-
-            val now = System.currentTimeMillis()
-            val waitTime = (rateLimitDelay - (now - lastRequestTime)).coerceAtLeast(0L)
-
-            // Using rateLimit from keiyoushi.network.rateLimit was too aggressive, leading to 429 errors when it was fine after the rest of the images loaded
-            // Note: Error 429 lasts for approximately 15-30 minutes. Had to jump between many VPN servers to reach this conclusion
-            if (waitTime > 0) {
-                Thread.sleep(waitTime)
-            }
-
-            var response = chain.proceed(chain.request())
-
-            // Handle 429 just in case (still holding the lock)
-            var attempt = 0
-            while (response.code == 429 && attempt < 3) {
-                val retryAfter = response.header("retry-after")?.toLongOrNull()?.times(1000L) ?: rateLimitDelay
-                response.close()
-
-                Thread.sleep(retryAfter)
-                response = chain.proceed(chain.request())
-                attempt++
-            }
-
-            lastRequestTime = System.currentTimeMillis()
-
-            response
-        }
-    }
-
-    private val pageClient: OkHttpClient = client.newBuilder()
-        .addInterceptor(strictApiInterceptor)
-        .build()
-
-    private val preferences: SharedPreferences by getPreferencesLazy()
-
-    private val langKeys = arrayOf("EN", "FR", "JA", "PT-BR", "PT", "ES-LA", "ES")
+    private val preferences: SharedPreferences = getPreferences()
 
     private fun buildLivewireHeaders(referer: String): Headers = headersBuilder()
         .set("X-Livewire", "")
@@ -108,34 +90,28 @@ class OniSaga(
 
     // =============================== Popular Manga ===============================
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.fromCallable {
+    override suspend fun getPopularManga(page: Int): MangasPage {
         val updates = PostFilterUpdatesDto(
             platform = typePref(),
             status = statusPref(),
             sort = "view",
         )
-        fetchMangaLivewirePage("$baseUrl/browse", page, updates)
+        return fetchMangaLivewirePage("$baseUrl/browse", page, updates)
     }
-
-    override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException()
-    override fun popularMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
 
     // ================================ Latest Manga ================================
 
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = Observable.fromCallable {
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
         val updates = PostFilterUpdatesDto(
             platform = typePref(),
             status = statusPref(),
         )
-        fetchMangaLivewirePage("$baseUrl/browse", page, updates)
+        return fetchMangaLivewirePage("$baseUrl/browse", page, updates)
     }
-
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
 
     // ========================= Livewire Pagination Logic ==========================
 
-    private fun fetchMangaLivewirePage(
+    private suspend fun fetchMangaLivewirePage(
         url: String,
         page: Int,
         updates: PostFilterUpdatesDto? = null,
@@ -145,7 +121,7 @@ class OniSaga(
         val state = if (cachedStateUrl == url && cachedState != null) {
             cachedState!!
         } else {
-            val doc = client.newCall(GET(url, headers)).execute().use { it.asJsoup() }
+            val doc = client.get(url).asJsoup()
 
             if (page == 1 && updates == null && prefExcluded.isEmpty()) {
                 return parseMangaList(doc)
@@ -174,22 +150,18 @@ class OniSaga(
                     calls = listOf(
                         LivewireCall(
                             method = "gotoPage",
-                            params = listOf(page),
+                            params = listOf(page.toString()),
                         ),
                     ),
                 ),
             ),
         )
 
-        val dto = client.newCall(
-            POST("$baseUrl/livewire/update", buildLivewireHeaders(url.substringBefore("?")), request.toJsonRequestBody(livewireJson)),
-        ).execute().use { response ->
-            if (!response.isSuccessful) {
-                cachedState = null
-                throw Exception("Livewire error (HTTP ${response.code}): ${response.body.string()}")
-            }
-            response.parseAs<LivewireResponse>()
-        }
+        val dto = client.post(
+            "$baseUrl/livewire/update",
+            buildLivewireHeaders(url.substringBefore("?")),
+            request.toJsonRequestBody(livewireJson),
+        ).parseAs<LivewireResponse>()
 
         dto.components.firstOrNull()?.snapshot?.let { newSnapshot ->
             cachedState = LivewireState(newSnapshot, state.token)
@@ -201,32 +173,8 @@ class OniSaga(
     }
 
     private fun parseMangaList(doc: Document): MangasPage {
-        val mangas = mutableListOf<SManga>()
         val showNsfw = preferences.getBoolean(PREF_NSFW_KEY, false)
-
-        doc.select("div.relative.group").forEach { card ->
-            val nsfwSpan = card.selectFirst("span:containsOwn(18+)")
-            if (nsfwSpan != null && !showNsfw) return@forEach
-            nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
-
-            val linkEl = card.selectFirst("a[href*=\"/manga/\"]") ?: return@forEach
-            val href = linkEl.absUrl("href").substringAfter(baseUrl)
-            if (!href.startsWith("/manga/")) return@forEach
-
-            val titleEl = card.selectFirst("a[title]") ?: card.selectFirst("h3") ?: linkEl
-            val currentTitle = titleEl.attr("title").ifEmpty { titleEl.text() }
-            if (currentTitle.isEmpty()) return@forEach
-
-            val currentThumb = card.selectFirst("img")?.let { resolveImageUrl(it) }
-
-            mangas.add(
-                SManga.create().apply {
-                    title = currentTitle
-                    thumbnail_url = currentThumb
-                    setUrlWithoutDomain(href)
-                },
-            )
-        }
+        val mangas = doc.select("div.relative.group").mapNotNull { it.toSManga(showNsfw) }
 
         val hasNextPage = doc.select("[wire:click*=nextPage]").any {
             !it.hasAttr("disabled")
@@ -237,26 +185,7 @@ class OniSaga(
 
     // =================================== Search ===================================
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = Observable.fromCallable {
-        if (query.startsWith("http")) {
-            val url = query.toHttpUrl()
-            var mangaUrl = query
-
-            if (url.pathSegments.firstOrNull() == "read") {
-                val doc = client.newCall(GET(query, headers)).execute().use { it.asJsoup() }
-                mangaUrl = doc.selectFirst("a[href*=\"/manga/\"]")?.absUrl("href")
-                    ?: throw Exception("Could not find manga link on chapter page")
-            } else if (url.pathSegments.size >= 3 && url.pathSegments[0] == "manga") {
-                mangaUrl = "${url.scheme}://${url.host}/manga/${url.pathSegments[1]}"
-            }
-
-            val manga = client.newCall(GET(mangaUrl, headers)).execute().use { response ->
-                mangaDetailsParse(response).apply {
-                    setUrlWithoutDomain(mangaUrl)
-                }
-            }
-            return@fromCallable MangasPage(listOf(manga), false)
-        }
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = if (query.isNotBlank()) {
             baseUrl.toHttpUrl().newBuilder()
                 .addPathSegment("search")
@@ -267,7 +196,7 @@ class OniSaga(
             "$baseUrl/browse"
         }
         val updates = buildUpdatesFromFilters(filters)
-        fetchMangaLivewirePage(url, page, updates)
+        return fetchMangaLivewirePage(url, page, updates)
     }
 
     private fun buildUpdatesFromFilters(filters: FilterList): PostFilterUpdatesDto? {
@@ -305,12 +234,9 @@ class OniSaga(
         }
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = throw UnsupportedOperationException()
-    override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
     // ================================== Filters ===================================
 
-    override fun getFilterList(): FilterList = FilterList(
+    override fun getFilterList(data: JsonElement?): FilterList = FilterList(
         TypeFilter(),
         GenreFilter(genreList.map { GenreTriState(it.first, it.second) }),
         StatusFilter(),
@@ -323,15 +249,30 @@ class OniSaga(
 
     // =============================== Manga Details ===============================
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val doc = response.asJsoup()
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val url = getMangaUrl(manga)
+        val doc = client.get(url).asJsoup()
 
+        val details = mangaDetailsParse(doc)
+        val chapterList = if (fetchChapters) fetchChapterList(doc) else chapters
+
+        return SMangaUpdate(details, chapterList)
+    }
+
+    private fun mangaDetailsParse(doc: Document): SManga {
         val nsfwSpan = doc.selectFirst("span:containsOwn(18+)")
         nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
 
         val badgeRow = doc.selectFirst("div.flex.items-center.gap-2.justify-center.mb-2")
 
         var bannerUrl = doc.selectFirst("img.absolute")?.let { resolveImageUrl(it) }
+
+        val slug = doc.location().toHttpUrl().pathSegments.lastOrNull { it.isNotBlank() }
 
         return SManga.create().apply {
             title = doc.selectFirst("h1")?.text()
@@ -343,6 +284,10 @@ class OniSaga(
             // If banner and cover are the same, do not display banner
             if (bannerUrl == thumbnail_url) {
                 bannerUrl = null
+            }
+
+            memo = buildJsonObject {
+                slug?.let { put("slug", it) }
             }
 
             val infoSection = doc.selectFirst("div.flex.flex-col.md\\:flex-row")
@@ -398,11 +343,7 @@ class OniSaga(
 
                 doc.selectFirst("p[class*=\"text-[13px]\"]")?.text()?.let { altText ->
                     if (altText.isNotEmpty()) {
-                        val altTitles = if (altText.contains("·")) {
-                            altText.split(" · ").map { t -> t.trim() }.filter { t -> t.isNotEmpty() }
-                        } else {
-                            listOf(altText)
-                        }
+                        val altTitles = altText.split(INTERPUNCT_REGEX).filter { it.isNotEmpty() }
                         if (altTitles.isNotEmpty()) {
                             append("\n\n**Alternative Titles:**\n")
                             altTitles.forEach { t -> append("- $t\n") }
@@ -433,7 +374,7 @@ class OniSaga(
         }
     }
 
-    private fun resolveImageUrl(img: org.jsoup.nodes.Element): String? {
+    private fun resolveImageUrl(img: Element): String? {
         val src = img.attr("data-src")
             .ifEmpty { img.attr("data-lazy-src") }
             .ifEmpty { img.attr("src") }
@@ -443,15 +384,49 @@ class OniSaga(
         return baseUrl.toHttpUrl().resolve(src)?.toString()
     }
 
+    private fun Element.toSManga(showNsfw: Boolean): SManga? {
+        val nsfwSpan = selectFirst("span:containsOwn(18+)")
+        if (nsfwSpan != null && !showNsfw) return null
+        nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
+
+        val linkEl = if (tagName() == "a") this else selectFirst("a[href*=\"/manga/\"]")
+        if (linkEl == null) return null
+
+        val href = linkEl.absUrl("href")
+        val httpUrl = href.toHttpUrlOrNull() ?: return null
+        val pathSegments = httpUrl.pathSegments.filter { it.isNotBlank() }
+        if (pathSegments.firstOrNull()?.equals("manga", true) != true || pathSegments.size < 2) return null
+
+        val slug = pathSegments[1]
+
+        val titleEl = selectFirst("div[data-flux-heading], h3, h4") ?: selectFirst("a[title]") ?: linkEl
+        val currentTitle = titleEl.attr("title").ifEmpty { titleEl.text() }
+        if (currentTitle.isEmpty()) return null
+
+        val currentThumb = selectFirst("img[alt]:not([alt=''])")?.let { resolveImageUrl(it) }
+            ?: selectFirst("img")?.let { resolveImageUrl(it) }
+
+        return SManga.create().apply {
+            title = currentTitle
+            thumbnail_url = currentThumb
+            setUrlWithoutDomain(href)
+            memo = buildJsonObject {
+                put("slug", slug)
+            }
+        }
+    }
+
     // =============================== Related Manga ===============================
 
-    override val disableRelatedMangasBySearch = true
+    override val supportsRelatedMangas get() = true
 
-    override fun relatedMangaListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
+    override suspend fun fetchRelatedMangaList(manga: SManga): List<SManga> {
+        val doc = client.get(baseUrl + manga.url).asJsoup()
+        return relatedMangaListParse(doc)
+    }
 
-    override fun relatedMangaListParse(response: Response): List<SManga> {
-        val doc = response.asJsoup()
-        val currentUrl = response.request.url.encodedPath
+    private fun relatedMangaListParse(doc: Document): List<SManga> {
+        val currentUrl = doc.location().toHttpUrl().encodedPath
         val showNsfw = preferences.getBoolean(PREF_NSFW_KEY, false)
 
         val heading = doc.select("div[data-flux-heading], h3, h2")
@@ -463,125 +438,139 @@ class OniSaga(
         val section = heading.parents().firstOrNull { it.select("div.relative.group, a[href*='/manga/']").size > 1 }
             ?: return emptyList()
 
-        return section.select("div.relative.group, a[href*='/manga/']:has(img)").mapNotNull { element ->
-            val link = if (element.tagName() == "a") element else element.selectFirst("a[href*='/manga/']")
-            if (link == null) return@mapNotNull null
-
-            val nsfwSpan = element.selectFirst("span:containsOwn(18+)")
-            if (nsfwSpan != null && !showNsfw) return@mapNotNull null
-            nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
-
-            val href = link.absUrl("href").substringAfter(baseUrl)
-            if (!href.startsWith("/manga/") || href == currentUrl) return@mapNotNull null
-
-            val title = element.selectFirst("div[data-flux-heading], h3, h4")?.text()
-                ?: link.attr("title").ifEmpty { link.text() }
-
-            if (title.isEmpty()) return@mapNotNull null
-
-            val thumbnail = element.selectFirst("img[alt]:not([alt=''])")?.let { resolveImageUrl(it) }
-                ?: element.selectFirst("img")?.let { resolveImageUrl(it) }
-
-            SManga.create().apply {
-                this.title = title
-                thumbnail_url = thumbnail
-                setUrlWithoutDomain(href)
-            }
-        }.distinctBy { it.url }
+        return section.select("div.relative.group, a[href*='/manga/']:has(img)")
+            .mapNotNull { it.toSManga(showNsfw) }
+            .filter { it.url != currentUrl }
+            .distinctBy { it.url }
     }
 
     // ================================= Chapters ==================================
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return Observable.fromCallable {
-            val doc = client.newCall(mangaDetailsRequest(manga)).execute().use { it.asJsoup() }
+    private suspend fun fetchChapterList(doc: Document): List<SChapter> = coroutineScope {
+        val nsfwSpan = doc.selectFirst("span:containsOwn(18+)")
+        nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
 
-            val nsfwSpan = doc.selectFirst("span:containsOwn(18+)")
-            nsfwSpan?.closest("div.absolute.inset-0.z-20")?.remove()
+        val state = doc.extractLivewireState("manga.chapter-list")
+            ?: return@coroutineScope emptyList()
 
-            val state = doc.extractLivewireState("manga.chapter-list")
-                ?: return@fromCallable emptyList()
+        // If langCode is null (the "all" source), loop through all 7 languages in parallel
+        val langCodes = langCode?.let { listOf(it) }
+            ?: listOf("EN", "FR", "JA", "PT-BR", "PT", "ES-LA", "ES")
 
-            var chapters = parseChaptersFromDoc(doc, langKey)
-            var currentSnapshot = state.snapshot
+        val deferredChapters = langCodes.map { code ->
+            async {
+                var currentSnapshot = state.snapshot
+                var prevChapterCount = 0
+                var langChapters = emptyList<SChapter>()
 
-            while (true) {
-                val request = ChapterLivewireRequest(
-                    token = state.token,
-                    components = listOf(
-                        ChapterLivewireRequest.Component(
-                            snapshot = currentSnapshot,
-                            updates = EmptyUpdatesDto(),
-                            calls = listOf(
-                                LivewireCall(
-                                    method = "loadMoreChapters",
-                                ),
+                while (true) {
+                    val request = ChapterLivewireRequest(
+                        token = state.token,
+                        components = listOf(
+                            ChapterLivewireRequest.Component(
+                                snapshot = currentSnapshot,
+                                updates = ChapterUpdatesDto(language = code),
+                                calls = listOf(LivewireCall(method = "loadMoreChapters")),
                             ),
                         ),
-                    ),
-                )
+                    )
 
-                val chapterRequest = POST("$baseUrl/livewire/update", buildLivewireHeaders(baseUrl + manga.url), request.toJsonRequestBody(livewireJson))
+                    val dto = client.post(
+                        "$baseUrl/livewire/update",
+                        buildLivewireHeaders(doc.location()),
+                        request.toJsonRequestBody(livewireJson),
+                    ).parseAs<LivewireResponse>()
 
-                val dto = client.newCall(chapterRequest).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        null
-                    } else {
-                        response.parseAs<LivewireResponse>()
-                    }
-                } ?: break
+                    val html = dto.components.firstOrNull()?.effects?.html ?: break
+                    val chapterDoc = Jsoup.parseBodyFragment(html, baseUrl)
 
-                val html = dto.components.firstOrNull()?.effects?.html ?: break
+                    langChapters = parseChaptersFromDoc(chapterDoc, code, langCode == null)
 
-                val chapterDoc = Jsoup.parseBodyFragment(html, baseUrl)
-                val newChapters = parseChaptersFromDoc(chapterDoc, langKey)
+                    if (langChapters.size <= prevChapterCount) break
 
-                if (newChapters.size <= chapters.size) break
-
-                chapters = newChapters
-                currentSnapshot = dto.components.first().snapshot
-            }
-
-            chapters.distinctBy { it.url }
-                .sortedByDescending {
-                    CHAPTER_NUMBER_REGEX.find(it.name)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
+                    prevChapterCount = langChapters.size
+                    currentSnapshot = dto.components.firstOrNull()?.snapshot ?: break
                 }
+                langChapters
+            }
         }
+
+        deferredChapters.awaitAll().flatten().distinctBy { it.url }
+            .sortedByDescending {
+                CHAPTER_NUMBER_REGEX.find(it.name)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
+            }
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> = throw UnsupportedOperationException()
-
-    private fun parseChaptersFromDoc(doc: Document, langId: String?): List<SChapter> {
+    private fun parseChaptersFromDoc(doc: Document, langCode: String, isAllSource: Boolean): List<SChapter> {
         val chapters = mutableListOf<SChapter>()
 
-        // Structure 1: Direct chapter links
-        doc.select("a[wire:key^=ch-]").forEach { el ->
-            val headingText = el.selectFirst("div[data-flux-heading]")?.text()?.replace("Chapter ", "")?.trim()
+        // langCode is already uppercase ("EN", "FR", etc.)
+        val langDisplay = langCode
+
+        // Pattern 1: Direct chapter links (no dropdown)
+        doc.select("a.gap-4:has(div[data-flux-heading])").forEach { el ->
+            val headingText = el.selectFirst("div[data-flux-heading]")?.text()?.replace("Chapter ", "")
             val number = headingText?.ifBlank { null } ?: el.selectFirst("div.w-10")?.text() ?: return@forEach
 
             val url = el.absUrl("href").ifEmpty { el.attr("href") }
-            if (url.isEmpty()) return@forEach
+            if (url.isEmpty() || !url.contains("/read/")) return@forEach
 
             val textEl = el.selectFirst("p[data-flux-text]")
-            val details = textEl?.text()?.replace(" - ", " · ")?.split("\\s*·\\s*".toRegex())?.filter { it.isNotEmpty() } ?: emptyList()
-
-            val language = details.firstOrNull { it in langKeys }
-                ?: details.lastOrNull { it.lowercase().contains("language") }
-                ?: details.lastOrNull()
-                ?: ""
+            val details = textEl?.text()?.replace(" - ", " · ")?.split(INTERPUNCT_REGEX)?.filter { it.isNotEmpty() } ?: emptyList()
 
             val dateStr = details.firstOrNull {
                 val lower = it.lowercase()
-                lower.contains("ago") || lower == "today" || lower == "yesterday"
+                lower.contains("ago") || lower.contains("today") || lower.contains("yesterday")
             } ?: ""
 
-            if (langId == null || language == langId) {
-                val chapterLang = if (langKey == null && language.isNotEmpty()) language else null
+            chapters.add(
+                SChapter.create().apply {
+                    name = "Chapter $number"
+                    scanlator = if (isAllSource) langCode else null
+                    date_upload = parseChapterDate(dateStr)
+                    setUrlWithoutDomain(url)
+                },
+            )
+        }
+
+        // Pattern 2: Dropdowns (multiple versions/groups)
+        doc.select("ui-dropdown:has(button div[data-flux-heading])").forEach { dropdown ->
+            val button = dropdown.selectFirst("button") ?: return@forEach
+
+            val headingText = button.selectFirst("div[data-flux-heading]")?.text()?.replace("Chapter ", "")
+            val number = headingText?.ifBlank { null } ?: button.selectFirst("div.w-10")?.text() ?: return@forEach
+
+            val textEl = button.selectFirst("p[data-flux-text]")
+            val details = textEl?.text()?.replace(" - ", " · ")?.split(INTERPUNCT_REGEX)?.filter { it.isNotEmpty() } ?: emptyList()
+            val dateStr = details.firstOrNull {
+                val lower = it.lowercase()
+                lower.contains("ago") || lower.contains("today") || lower.contains("yesterday")
+            } ?: ""
+
+            val links = dropdown.select("ui-menu a[data-flux-menu-item]")
+            var unknownCount = 1
+
+            links.forEach { linkEl ->
+                val url = linkEl.absUrl("href").ifEmpty { linkEl.attr("href") }
+                if (url.isEmpty() || !url.contains("/read/")) return@forEach
+
+                // Extract group name from the span inside the menu item
+                val group = linkEl.selectFirst("span.text-sm")?.text()
+                    ?: linkEl.selectFirst("div.flex.items-center.gap-2 > span:not(.ml-auto)")?.text()
+                    ?: ""
+
+                // If group is missing or "Unknown group", name them Unknown 1, Unknown 2...
+                val groupName = when {
+                    group.isBlank() || group.equals("Unknown group", true) -> "Unknown $unknownCount"
+                    else -> group
+                }
+                if (group.isBlank() || group.equals("Unknown group", true)) unknownCount++
 
                 chapters.add(
                     SChapter.create().apply {
                         name = "Chapter $number"
-                        scanlator = chapterLang
+                        // Append language to scanlator if it's the "all" source
+                        scanlator = if (isAllSource) "$langDisplay - $groupName" else groupName
                         date_upload = parseChapterDate(dateStr)
                         setUrlWithoutDomain(url)
                     },
@@ -589,48 +578,11 @@ class OniSaga(
             }
         }
 
-        // Structure 2: Dropdown menus (multi-language chapters)
-        doc.select("ui-dropdown[wire:key^=ch-]").forEach { dropdown ->
-            val button = dropdown.selectFirst("button") ?: return@forEach
-
-            val headingText = dropdown.selectFirst("div[data-flux-heading]")?.text()?.replace("Chapter ", "")?.trim()
-            val number = headingText?.ifBlank { null } ?: button.selectFirst("div.w-10")?.text() ?: return@forEach
-
-            val textEl = dropdown.selectFirst("p[data-flux-text]")
-            val details = textEl?.text()?.replace(" - ", " · ")?.split("\\s*·\\s*".toRegex())?.filter { it.isNotEmpty() } ?: emptyList()
-
-            val dateStr = details.firstOrNull {
-                val lower = it.lowercase()
-                lower.contains("ago") || lower == "today" || lower == "yesterday"
-            } ?: ""
-
-            dropdown.select("ui-menu a[data-flux-menu-item]").forEach { linkEl ->
-                val url = linkEl.absUrl("href").ifEmpty { linkEl.attr("href") }
-                if (url.isEmpty()) return@forEach
-
-                val language = linkEl.selectFirst("div[data-flux-badge]")?.text()
-                    ?: linkEl.text()
-
-                if (langId == null || language == langId) {
-                    val chapterLang = if (langKey == null && language.isNotEmpty()) language else null
-
-                    chapters.add(
-                        SChapter.create().apply {
-                            name = "Chapter $number"
-                            scanlator = chapterLang
-                            date_upload = parseChapterDate(dateStr)
-                            setUrlWithoutDomain(url)
-                        },
-                    )
-                }
-            }
-        }
-
         return chapters
     }
 
     private fun parseChapterDate(dateStr: String): Long {
-        val date = dateStr.lowercase().trim()
+        val date = dateStr.lowercase()
         if (date.isEmpty()) return 0L
 
         val now = System.currentTimeMillis()
@@ -638,8 +590,7 @@ class OniSaga(
         if (date.contains("today")) return now
         if (date.contains("yesterday")) return now - 86_400_000L
 
-        val regex = Regex("(\\d+)\\s+(minute|hour|day|week|month|year)s?\\s+ago")
-        val match = regex.find(date) ?: return 0L
+        val match = RELATIVE_DATE_REGEX.find(date) ?: return 0L
 
         val value = match.groupValues[1].toInt()
         val unit = match.groupValues[2]
@@ -660,15 +611,15 @@ class OniSaga(
     @Volatile
     private var currentReaderToken: String = ""
 
-    override fun pageListParse(response: Response): List<Page> {
-        val body = response.body.string()
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val chapterUrl = baseUrl + chapter.url
+        val body = client.get(chapterUrl).body.string()
 
         val token = READER_TOKEN_REGEX.find(body)?.groupValues?.get(1) ?: ""
         if (token.isBlank()) throw Exception("Could not find readerToken in chapter page")
 
         currentReaderToken = token
 
-        val chapterUrl = response.request.url.toString()
         val pageCount = PAGE_ORDER_REGEX.findAll(body).count()
 
         return (0 until pageCount).map { index ->
@@ -676,52 +627,71 @@ class OniSaga(
         }
     }
 
-    override fun fetchImageUrl(page: Page): Observable<String> {
-        val chapterUrl = page.url.substringBeforeLast("#")
+    override suspend fun getImageUrl(page: Page): String {
+        val chapterUrl = page.url.substringBefore("#")
         val cid = chapterUrl.toHttpUrl().pathSegments.last()
         val order = page.index
         val apiUrl = "$baseUrl/api/chapter/$cid/page/$order"
 
-        return Observable.fromCallable {
-            var token = currentReaderToken
-            var attempt = 0
+        var token = currentReaderToken
+        var attempt = 0
 
-            while (attempt < 3) {
-                attempt++
+        while (attempt < 3) {
+            attempt++
 
-                val response = pageClient.newCall(GET(apiUrl, apiHeaders(token, chapterUrl))).execute()
-
-                response.header("x-reader-token-next")?.takeIf { it.isNotBlank() }?.let {
-                    currentReaderToken = it
-                }
-
-                val dto = response.parseAs<PageApiResponse>()
-
-                if (dto.url != null) {
-                    return@fromCallable dto.url
-                }
-
-                if (!response.isSuccessful || dto.message?.contains("expired", ignoreCase = true) == true) {
-                    val refreshBody = client.newCall(GET(chapterUrl, headers)).execute().use { it.body.string() }
-                    val newToken = READER_TOKEN_REGEX.find(refreshBody)?.groupValues?.get(1)
-
-                    if (newToken.isNullOrBlank()) {
-                        throw Exception("Failed to refresh reader token (HTTP ${response.code})")
-                    }
-
-                    token = newToken
-                    currentReaderToken = newToken
-                    continue
-                }
-
-                throw Exception("API Error: ${dto.message}")
+            apiLock.withLock {
+                val rateLimitDelay = preferences.getString(PREF_RATE_LIMIT_KEY, "2000")?.toLongOrNull() ?: 2000L
+                val now = System.currentTimeMillis()
+                val waitTime = (rateLimitDelay - (now - lastRequestTime)).coerceAtLeast(0L)
+                // Using rateLimit from keiyoushi.network.rateLimit was too aggressive, leading to 429 errors when it was fine after the rest of the images loaded
+                // Note: Error 429 lasts for approximately 15-30 minutes. Had to jump between many VPN servers to reach this conclusion
+                if (waitTime > 0) delay(waitTime)
+                lastRequestTime = System.currentTimeMillis()
             }
 
-            throw Exception("Failed to fetch image after 3 retries.")
-        }
-    }
+            val response = client.get(apiUrl, apiHeaders(token, chapterUrl), ensureSuccess = false)
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+            // Handle 429 just in case (still holding the lock)
+            if (response.code == 429) {
+                val rateLimitDelay = preferences.getString(PREF_RATE_LIMIT_KEY, "2000")?.toLongOrNull() ?: 2000L
+                val retryAfter = response.header("retry-after")?.toLongOrNull()?.times(1000L) ?: rateLimitDelay
+                response.close()
+                apiLock.withLock {
+                    delay(retryAfter)
+                    lastRequestTime = System.currentTimeMillis()
+                }
+                continue
+            }
+
+            // Update token globally if the server provides a new one
+            response.header("x-reader-token-next")?.takeIf { it.isNotBlank() }?.let {
+                currentReaderToken = it
+            }
+
+            val dto = response.parseAs<PageApiResponse>()
+
+            if (dto.url != null) {
+                return dto.url
+            }
+
+            if (!response.isSuccessful || dto.message?.contains("expired", ignoreCase = true) == true) {
+                val refreshBody = client.get(chapterUrl).body.string()
+                val newToken = READER_TOKEN_REGEX.find(refreshBody)?.groupValues?.get(1)
+
+                if (newToken.isNullOrBlank()) {
+                    throw Exception("Failed to refresh reader token (HTTP ${response.code})")
+                }
+
+                token = newToken
+                currentReaderToken = newToken
+                continue
+            }
+
+            throw Exception("API Error: ${dto.message}")
+        }
+
+        throw Exception("Failed to fetch image after 3 retries.")
+    }
 
     override fun imageRequest(page: Page): Request {
         val referer = page.url.substringBeforeLast("#")
@@ -752,6 +722,32 @@ class OniSaga(
             }
         }
         return null
+    }
+
+    override fun getMangaUrl(manga: SManga): String {
+        val slug = manga.memo["slug"]?.string ?: manga.url.substringAfterLast("/")
+        return "$baseUrl/manga/$slug"
+    }
+
+    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
+
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        val pathSegments = url.pathSegments.filter { it.isNotBlank() }
+        val mangaUrl = when {
+            pathSegments.firstOrNull()?.equals("manga", true) == true && pathSegments.size >= 2 -> {
+                "${url.scheme}://${url.host}/manga/${pathSegments[1]}"
+            }
+            pathSegments.firstOrNull()?.equals("read", true) == true -> {
+                val doc = client.get(url.toString()).asJsoup()
+                doc.selectFirst("a[href*=\"/manga/\"]")?.absUrl("href") ?: return null
+            }
+            else -> return null
+        }
+
+        val doc = client.get(mangaUrl).asJsoup()
+        return mangaDetailsParse(doc).apply {
+            setUrlWithoutDomain(mangaUrl)
+        }
     }
 
     class LivewireState(val snapshot: String, val token: String)
@@ -855,8 +851,10 @@ class OniSaga(
         private val READER_TOKEN_REGEX = Regex("""readerToken["']?\s*:\s*["']([^"']+)["']""")
         private val PAGE_ORDER_REGEX = Regex("""["']?order["']?\s*:\s*(\d+)""")
         private val CHAPTER_NUMBER_REGEX = Regex("""Chapter\s+([\d.]+)""")
+        private val RELATIVE_DATE_REGEX = Regex("(\\d+)\\s+(minute|hour|day|week|month|year)s?\\s+ago")
         private val ORIGIN_REGEX = Regex("(Japanese|Korean|Chinese|English)", RegexOption.IGNORE_CASE)
         private val YEAR_REGEX = Regex("^\\d{4}$")
         private val RATING_REGEX = Regex("(\\d)\\.0(?=[/ ])")
+        private val INTERPUNCT_REGEX = Regex("\\s*·\\s*")
     }
 }

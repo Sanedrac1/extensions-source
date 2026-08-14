@@ -54,7 +54,7 @@ abstract class Comix :
     HttpSource(),
     ConfigurableSource {
 
-    private val apiUrl = "https://comix.to/api/v1"
+    private val apiUrl get() = "$baseUrl/api/v1"
     override val supportsLatest = true
     override val supportsRelatedMangas = false
     override val disableRelatedMangasBySearch = true
@@ -103,7 +103,12 @@ abstract class Comix :
         val isScrambled = imageUrl.contains("#scrambled")
         val isV3 = urlWithoutFragment.toHttpUrlOrNull()?.queryParameterNames?.contains("v3") == true
         val isLegacyScramble = isScrambled && !isV3
-        val requestHeaders = if (imageHost.isNotEmpty() && !imageHost.contains("comix.to") && !isLegacyScramble) {
+        val baseUrlHost = baseUrl.toHttpUrl().host
+        val requestHeaders = if (
+            imageHost.isNotEmpty() &&
+            !imageHost.endsWith(baseUrlHost) &&
+            !isLegacyScramble
+        ) {
             headersBuilder()
                 .removeAll("Origin")
                 .build()
@@ -538,6 +543,18 @@ abstract class Comix :
                             state.submitted = true;
                             window.$$interfaceName.passPayload(JSON.stringify(state.items));
                         };
+                        const findNextButton = page => {
+                            const buttons = [...document.querySelectorAll('.mchap-foot button')]
+                                .filter(button => !button.disabled);
+                            return buttons.find(button => {
+                                const label = [
+                                    button.getAttribute('aria-label'),
+                                    button.getAttribute('title'),
+                                    button.textContent
+                                ].filter(Boolean).join(' ');
+                                return /\bnext\b/i.test(label);
+                            }) || buttons.find(button => Number(button.textContent?.trim()) === page + 1);
+                        };
                         const capture = parsed => {
                             try {
                                 const items = parsed?.result?.items;
@@ -552,17 +569,19 @@ abstract class Comix :
 
                                 const meta = parsed.result.meta || parsed.result.pagination || {};
                                 const page = meta.page || 1;
+                                const lastPage = meta.lastPage || meta.last_page || page;
+                                const hasNext = meta.hasNext || page < lastPage;
                                 if (state.seen.has(page)) return true;
 
                                 state.seen.add(page);
                                 state.items.push(...items);
-                                if (meta.hasNext && !state.nextClicks.has(page)) {
+                                if (hasNext && !state.nextClicks.has(page)) {
                                     state.nextClicks.add(page);
                                     window.$$interfaceName.resetTimer();
                                     let tries = 0;
                                     const interval = setInterval(() => {
-                                        const button = document.querySelector('.mchap-foot button[aria-label*=Next]');
-                                        if (button && !button.disabled) {
+                                        const button = findNextButton(page);
+                                        if (button) {
                                             button.click();
                                             clearInterval(interval);
                                         } else if (++tries > 50) {
@@ -805,8 +824,11 @@ abstract class Comix :
                         val requestUrl = request.url?.toString()?.toHttpUrlOrNull()
                             ?: return super.shouldInterceptRequest(view, request)
 
-                        val allowedHost = requestUrl.host == "comix.to" ||
+                        val baseUrlHost = baseUrl.toHttpUrl().host
+                        val allowedHost = requestUrl.host.endsWith(baseUrlHost) ||
                             requestUrl.host.endsWith(".comix.to") ||
+                            requestUrl.host == "comix.to" ||
+                            requestUrl.host == "comix.ws" ||
                             requestUrl.host == "challenges.cloudflare.com"
                         if (!allowedHost) return emptyResponse
                         return super.shouldInterceptRequest(view, request)
@@ -938,7 +960,7 @@ abstract class Comix :
             setDefaultValue(DEFAULT_CONTENT_RATING)
         }.let(screen::addPreference)
 
-        // Content preferences (mirrors comix.to's "Content preferences" modal):
+        // Content preferences (mirrors the site's "Content preferences" modal):
         //   - Default Types       — checkbox per type, all checked by default
         //   - Default Demographics — same, all checked by default
         //   - Blocked Genres      — opt-in list of genres to always exclude
@@ -1016,7 +1038,7 @@ abstract class Comix :
             summary = "Include the site's narrative tag list (e.g. Demons, " +
                 "Vampires, Time Travel) alongside the curated genres in the " +
                 "manga details. Off by default — the curated set matches what " +
-                "comix.to itself shows on the page."
+                "the site itself shows on the page."
             setDefaultValue(false)
         }.let(screen::addPreference)
 

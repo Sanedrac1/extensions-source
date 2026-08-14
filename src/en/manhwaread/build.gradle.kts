@@ -1,14 +1,24 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "ManhwaRead"
-    className = "ManhwaRead"
     versionCode = 1
-    contentWarning = ContentWarning.NSFW
+    contentWarning = ContentWarning.MIXED
     libVersion = "1.4"
-    baseUrl = "https://manhwaread.com"
+
+    source {
+        lang = "en"
+        baseUrl {
+            mirrors(
+                "https://manhwaread.com",
+                "https://manhwaread.org",
+            )
+        }
+    }
 
     deeplink {
         host("manhwaread.com")

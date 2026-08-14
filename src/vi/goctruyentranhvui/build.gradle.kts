@@ -1,16 +1,23 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Goc Truyen Tranh Vui"
-    className = "GocTruyenTranhVui"
-    versionCode = 15
+    versionCode = 18
     contentWarning = ContentWarning.SAFE
-    libVersion = "1.4"
+    libVersion = "1.6"
+
+    source {
+        lang = "vi"
+        baseUrl {
+            custom("https://goctruyentranhvui41.com")
+        }
+    }
 
     deeplink {
-        host("goctruyentranhvui30.com")
         path("/truyen/..*")
     }
 }

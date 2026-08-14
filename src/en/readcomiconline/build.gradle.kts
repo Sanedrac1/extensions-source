@@ -1,17 +1,26 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "ReadComicOnline"
-    className = "Readcomiconline"
     versionCode = 44
     contentWarning = ContentWarning.SAFE
     libVersion = "1.4"
 
+    source {
+        lang = "en"
+        baseUrl {
+            mirrors(
+                "https://readcomiconline.li",
+                "https://rcostation.xyz",
+            )
+        }
+    }
+
     deeplink {
-        host("readcomiconline.li")
-        host("rcostation.xyz")
         path("/Comic/..*")
     }
 }

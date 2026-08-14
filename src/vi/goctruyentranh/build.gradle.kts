@@ -1,11 +1,20 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Goc Truyen Tranh"
-    className = "GocTruyenTranh"
     versionCode = 12
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
+
+    source {
+        name = "GocTruyenTranh"
+        lang = "vi"
+        baseUrl {
+            custom("https://goctruyentranh.com")
+        }
+    }
 }

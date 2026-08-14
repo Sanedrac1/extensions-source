@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Joymii Hub"
-    className = "JoymiiHub"
     versionCode = 0
     contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    libVersion = "1.6"
     theme = "masonry"
-    baseUrl = "https://www.joymiihub.com"
+
+    source {
+        lang = "all"
+        baseUrl = "https://www.joymiihub.com"
+    }
 }

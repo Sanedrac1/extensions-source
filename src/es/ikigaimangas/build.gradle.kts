@@ -1,11 +1,20 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Ikigai Mangas"
-    className = "IkigaiMangas"
-    versionCode = 33
-    contentWarning = ContentWarning.NSFW
+    versionCode = 35
+    contentWarning = ContentWarning.MIXED
     libVersion = "1.4"
+
+    source {
+        lang = "es"
+        baseUrl {
+            custom("https://visorikigai.gettocaboca.com")
+        }
+        versionId = 2
+    }
 }

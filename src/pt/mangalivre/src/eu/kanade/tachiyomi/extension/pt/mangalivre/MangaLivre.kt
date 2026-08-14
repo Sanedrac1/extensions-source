@@ -11,43 +11,37 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.annotation.Source
 import keiyoushi.network.rateLimit
+import keiyoushi.utils.WebViewTimeoutException
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.runWebView
+import kotlinx.coroutines.runBlocking
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Interceptor
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import rx.Observable
 import java.io.IOException
+import java.util.Collections
+import java.util.LinkedHashSet
 import kotlin.time.Duration.Companion.seconds
 
-class MangaLivre :
+@Source
+abstract class MangaLivre :
     HttpSource(),
     ConfigurableSource {
+
     private val baseUrlHost by lazy { baseUrl.toHttpUrl().host }
-
-    override val name: String = "Manga Livre"
-
-    override val baseUrl: String = "https://toonlivre.net"
-
-    override val lang: String = "pt-BR"
 
     override val supportsLatest: Boolean = true
 
-    override val versionId: Int = 2
-
     override val client: OkHttpClient = network.client.newBuilder()
-        .addInterceptor(::clientHeaderInterceptor)
         .rateLimit(2, 1.seconds) { it.host == baseUrlHost }
         .build()
-
-    private val scrapeClient: OkHttpClient by lazy {
-        network.client.newBuilder()
-            .followRedirects(false)
-            .build()
-    }
 
     private val apiUrl: String = "$baseUrl/api"
 
@@ -65,8 +59,8 @@ class MangaLivre :
 
     private val popularFilter = FilterList(
         listOf(
-            OrderByFilter(options = listOf("" to "popular")),
-            OrderDirectionFilter(options = listOf("" to "desc")),
+            OrderByFilter(options = listOf("" to SORT_POPULAR)),
+            OrderDirectionFilter(options = listOf("" to DIRECTION_DESC)),
         ),
     )
 
@@ -78,8 +72,8 @@ class MangaLivre :
 
     private val latestFilter = FilterList(
         listOf(
-            OrderByFilter(options = listOf("" to "updated")),
-            OrderDirectionFilter(options = listOf("" to "desc")),
+            OrderByFilter(options = listOf("" to SORT_UPDATED)),
+            OrderDirectionFilter(options = listOf("" to DIRECTION_DESC)),
         ),
     )
 
@@ -134,14 +128,75 @@ class MangaLivre :
 
     // ============================== Pages =======================================
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        val dto = chapter.url.substringAfterLast("#").parseAs<ChapterReferenceDto>()
-        return GET("$apiUrl/mangas/${dto.mangaId}/chapters/${dto.chapterId}", headers)
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
+        runBlocking {
+            getPageListWithWebView(chapter)
+        }
     }
 
-    override fun pageListParse(response: Response): List<Page> = response.parseJson<PageDto>().toPageList()
+    private suspend fun getPageListWithWebView(
+        chapter: SChapter,
+    ): List<Page> {
+        val chapterUrl = "$baseUrl${chapter.url}".toHttpUrl()
+        val ref = chapterUrl.fragment!!.parseAs<ChapterReferenceDto>()
+        val chapterNumber = chapterUrl.pathSegments.last { it.isNotEmpty() }
+        val readerUrl = chapterUrl.newBuilder().fragment(null).build().toString()
+        val imageUrls = Collections.synchronizedSet(LinkedHashSet<String>())
+        val bridgeName = (1..(10..20).random())
+            .map { (('a'..'z') + ('A'..'Z')).random() }
+            .joinToString("")
+        val collectImageUrlsScript = collectImageUrlsScript(bridgeName)
 
-    override fun imageUrlParse(response: Response): String = ""
+        fun collect(rawUrl: String) {
+            val imageUrl = rawUrl.toCdnImageUrl() ?: return
+            if (!imageUrl.isChapterImage(ref.mangaId, chapterNumber)) return
+            imageUrls.add(imageUrl)
+        }
+
+        try {
+            return runWebView(timeout = WEBVIEW_TIMEOUT) {
+                var previousCount = 0
+                var stablePolls = 0
+
+                javaScriptEnabled = true
+                domStorageEnabled = true
+
+                interceptRequest { request ->
+                    collect(request.url.toString())
+                    null
+                }
+                jsBridge(bridgeName) { payload ->
+                    payload.parseAs<List<String>>().forEach(::collect)
+                }
+                onPageFinished {
+                    evaluateJs(collectImageUrlsScript)
+                }
+                poll(1.seconds) {
+                    evaluateJs(collectImageUrlsScript)
+                    val currentCount = imageUrls.size
+                    if (currentCount > 0 && currentCount == previousCount) {
+                        stablePolls++
+                    } else {
+                        stablePolls = 0
+                    }
+                    previousCount = currentCount
+                    if (stablePolls >= STABLE_POLLS) {
+                        resolve(imageUrls.toPageList())
+                    }
+                }
+                loadUrl(readerUrl)
+            }
+        } catch (error: WebViewTimeoutException) {
+            if (imageUrls.isNotEmpty()) {
+                return imageUrls.toPageList()
+            }
+            throw error
+        }
+    }
+
+    override fun pageListParse(response: Response): List<Page> = throw UnsupportedOperationException()
+
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     // ============================== Filters =======================================
 
@@ -150,19 +205,19 @@ class MangaLivre :
             OrderByFilter(
                 "Ordem",
                 listOf(
-                    "Mais Visualizados" to "popular",
-                    "Lançamentos" to "release",
-                    "Última Atualização" to "updated",
-                    "Melhor Avaliação" to "rating",
-                    "A-Z" to "title",
+                    "Mais Visualizados" to SORT_POPULAR,
+                    "Lançamentos" to SORT_RELEASE,
+                    "Última Atualização" to SORT_UPDATED,
+                    "Melhor Avaliação" to SORT_RATING,
+                    "A-Z" to SORT_TITLE,
                 ),
             ),
             Filter.Separator(),
             OrderDirectionFilter(
                 "Direção",
                 listOf(
-                    "↑ Decrescente" to "desc",
-                    "↓ Crescente" to "asc",
+                    "↑ Decrescente" to DIRECTION_DESC,
+                    "↓ Crescente" to DIRECTION_ASC,
                 ),
             ),
         ),
@@ -177,18 +232,14 @@ class MangaLivre :
             title = "Titulo alternativo"
             summary = buildString {
                 append("Use titulos alternativos como principal quando disponivel.")
-                append(" Essa opção não tem efeito sobre obras já adicionadas na sua bibilioteca")
+                append(" Essa opção não tem efeito sobre obras já adicionadas na sua biblioteca")
             }
             setDefaultValue(false)
         }.also(screen::addPreference)
     }
 
-    // ============================== Helper =======================================
+    // ============================== Utilities =======================================
 
-    /**
-     * Lê o corpo como JSON. Se vier HTML (página de despedida / redirecionamento do
-     * Cloudflare) ou vazio, falha com mensagem clara em vez de estourar no parser.
-     */
     private inline fun <reified T> Response.parseJson(): T {
         val peek = peekBody(MAX_PEEK).string().trimStart()
         if (peek.isEmpty() || peek.startsWith("<")) {
@@ -198,99 +249,71 @@ class MangaLivre :
         return parseAs<T>()
     }
 
-    @Volatile
-    private var cachedToken: ClientToken? = null
-
-    @Volatile
-    private var cachedCandidates: List<ClientToken>? = null
-
-    private fun clientHeaderInterceptor(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        if (request.url.host != baseUrlHost) {
-            return chain.proceed(request)
-        }
-
-        val token = currentToken()
-        val response = chain.proceed(request.withClientHeader(token))
-        if (response.code != 403 || !response.isOfficialAppError()) {
-            return response
-        }
-
-        // O header de cliente rotacionou. Redescobre os candidatos no bundle e testa
-        // cada um até a API parar de recusar, memorizando o que funcionar.
-        response.close()
-        for (candidate in refreshCandidates()) {
-            if (candidate == token) continue
-            val retry = chain.proceed(request.withClientHeader(candidate))
-            if (retry.code != 403 || !retry.isOfficialAppError()) {
-                cachedToken = candidate
-                return retry
-            }
-            retry.close()
-        }
-        return chain.proceed(request.withClientHeader(token))
-    }
-
-    private fun Request.withClientHeader(token: ClientToken): Request = newBuilder().header(token.header, token.value).build()
-
-    private fun currentToken(): ClientToken = cachedToken ?: synchronized(this) {
-        cachedToken ?: candidates().first().also { cachedToken = it }
-    }
-
-    private fun candidates(): List<ClientToken> = cachedCandidates ?: refreshCandidates()
-
-    private fun refreshCandidates(): List<ClientToken> = synchronized(this) {
-        scrapeCandidates().also { cachedCandidates = it }
-    }
-
-    /**
-     * O front-end manda um header de cliente cujo NOME rotaciona toda hora
-     * (x-toonlivre-client -> x-tly-sec -> x-app-key) e cujo valor costuma ser "web-...".
-     * Em vez de fixar um nome, varremos os bundles em /assets e coletamos todos os pares
-     * "x-...":"valor", priorizando os "web-..."; o interceptor testa cada um quando toma 403.
-     */
-    private fun scrapeCandidates(): List<ClientToken> = try {
-        val html = scrapeClient.newCall(GET("$baseUrl/", headers)).execute()
-            .use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
-        val assets = ASSET_REGEX.findAll(html).map { it.value }.distinct().toList()
-        val js = buildString {
-            assets.take(MAX_ASSETS).forEach { path ->
-                scrapeClient.newCall(GET("$baseUrl$path", headers)).execute()
-                    .use { if (it.isSuccessful) append(it.body?.string().orEmpty()) }
-            }
-        }
-        extractCandidates(js)
-    } catch (_: Exception) {
-        listOf(DEFAULT_TOKEN)
-    }
-
-    private fun extractCandidates(js: String): List<ClientToken> {
-        val pairs = PAIR_REGEX.findAll(js)
-            .map { ClientToken(it.groupValues[1], it.groupValues[2]) }
-            .distinct()
-            .toList()
-        val ranked = pairs.sortedByDescending { it.value.startsWith("web-") }
-            .take(MAX_CANDIDATES)
-        return (ranked + DEFAULT_TOKEN).distinct()
-    }
-
-    private fun Response.isOfficialAppError(): Boolean = try {
-        peekBody(MAX_PEEK).string().contains("aplicativo oficial", ignoreCase = true)
-    } catch (_: Exception) {
-        false
-    }
-
-    private data class ClientToken(val header: String, val value: String)
-
     companion object {
+        private const val STABLE_POLLS = 3
+        private val WEBVIEW_TIMEOUT = 90.seconds
+        private const val CDN_HOST = "cdn.toonlivre.net"
+        private const val PROXY_HOST = "slightly-free-mayfly.edgecompute.app"
+        private val PAGE_NUMBER_REGEX = Regex("""_(\d+)\.[^.]+$""")
+
         private const val ALTERNATIVE_TITLE_PREF = "alternativeTitlePref"
         private const val MAX_PEEK = 1024L
-        private const val MAX_ASSETS = 8
-        private const val MAX_CANDIDATES = 8
         private const val NON_JSON_MESSAGE =
             "Resposta não-JSON (Cloudflare ou header desatualizado). Abra a fonte na WebView do app e tente de novo."
-        private val DEFAULT_TOKEN = ClientToken("x-app-key", "web-z99")
-        private val ASSET_REGEX = Regex("/assets/[\\w-]+\\.js")
-        private val PAIR_REGEX = Regex("\"(x-[a-z0-9-]{2,})\"\\s*[,:]\\s*\"([a-z][a-z0-9-]{1,40})\"")
+
+        private const val SORT_POPULAR = "popular"
+        private const val SORT_RELEASE = "release"
+        private const val SORT_UPDATED = "updated"
+        private const val SORT_RATING = "rating"
+        private const val SORT_TITLE = "title"
+        private const val DIRECTION_DESC = "desc"
+        private const val DIRECTION_ASC = "asc"
     }
+
+    private fun collectImageUrlsScript(bridgeName: String) =
+        """
+        (() => {
+            const urls = new Set();
+            document.querySelectorAll('img').forEach((image) => {
+                [image.currentSrc, image.src, image.dataset.src].forEach((url) => {
+                    if (url) urls.add(url);
+                });
+            });
+            performance.getEntriesByType('resource').forEach((entry) => urls.add(entry.name));
+            $bridgeName.post(JSON.stringify(Array.from(urls)));
+        })();
+        """.trimIndent()
+
+    private fun String.toCdnImageUrl(): String? {
+        val url = toHttpUrlOrNull() ?: return null
+        val candidate = when (url.host) {
+            CDN_HOST -> url
+            PROXY_HOST -> url.queryParameter("url")?.toHttpUrlOrNull()
+            else -> null
+        } ?: return null
+
+        return candidate.takeIf { it.isHttps && it.host == CDN_HOST }?.toString()
+    }
+
+    private fun String.isChapterImage(mangaId: String, chapterNumber: String): Boolean {
+        val pathSegments = toHttpUrl().pathSegments
+        return pathSegments.size >= 4 &&
+            pathSegments[0] == "obras" &&
+            pathSegments[1] == mangaId &&
+            pathSegments[2] == chapterNumber &&
+            pathSegments[3].isNotEmpty()
+    }
+
+    private fun Set<String>.toPageList(): List<Page> = synchronized(this) {
+        val sortedUrls = sortedWith(
+            compareBy<String>({ it.pageNumber() ?: Int.MAX_VALUE }, { it }),
+        )
+        sortedUrls.mapIndexed { index, imageUrl -> Page(index, imageUrl = imageUrl) }
+    }
+
+    private fun String.pageNumber(): Int? = toHttpUrl().pathSegments.lastOrNull()
+        ?.let(PAGE_NUMBER_REGEX::find)
+        ?.groupValues
+        ?.get(1)
+        ?.toIntOrNull()
 }

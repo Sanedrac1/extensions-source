@@ -1,16 +1,26 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "MoeTruyen"
-    className = "MoeTruyen"
-    versionCode = 6
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
-    libVersion = "1.4"
-}
+    libVersion = "1.6"
 
-dependencies {
+    deeplink {
+        path("/manga/.*")
+    }
 
-    implementation(project(":lib:cookieinterceptor"))
+    source {
+        lang = "vi"
+        baseUrl {
+            mirrors(
+                "https://moetruyen.net",
+                "https://truyen.moe",
+            )
+        }
+    }
 }

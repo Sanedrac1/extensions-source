@@ -1,13 +1,21 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "MANGA Plus by SHUEISHA"
-    className = "MangaPlusFactory"
-    versionCode = 62
+    versionCode = 65
     contentWarning = ContentWarning.SAFE
-    libVersion = "1.4"
+    libVersion = "1.6"
+
+    listOf("en", "es", "fr", "id", "pt-BR", "ru", "th", "vi", "de").forEach {
+        source {
+            lang = it
+            baseUrl = "https://mangaplus.shueisha.co.jp"
+        }
+    }
 
     deeplink {
         host("mangaplus.shueisha.co.jp")
@@ -20,6 +28,5 @@ keiyoushi {
 }
 
 dependencies {
-
     implementation(project(":lib:i18n"))
 }

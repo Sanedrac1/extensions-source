@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Playmate Hunter"
-    className = "PlaymateHunter"
     versionCode = 0
     contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    libVersion = "1.6"
     theme = "masonry"
-    baseUrl = "https://pmatehunter.com"
+
+    source {
+        lang = "all"
+        baseUrl = "https://pmatehunter.com"
+    }
 }

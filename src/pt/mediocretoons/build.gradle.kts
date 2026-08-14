@@ -1,11 +1,13 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Mediocre Toons"
-    versionCode = 19
-    contentWarning = ContentWarning.NSFW
+    versionCode = 20
+    contentWarning = ContentWarning.NSFW // or MIXED, please confirm
     libVersion = "1.4"
 
     source {

@@ -1,22 +1,32 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "SchaleNetwork"
-    className = "KoharuFactory"
     versionCode = 20
     contentWarning = ContentWarning.NSFW
     libVersion = "1.4"
 
+    listOf("all", "en", "ja", "zh").forEach {
+        source {
+            lang = it
+            if (it == "en") id = 1484902275639232927L
+            baseUrl {
+                mirrors(
+                    "https://schale.network",
+                    "https://anchira.to",
+                    "https://gehenna.jp",
+                    "https://niyaniya.moe",
+                    "https://shupogaki.moe",
+                )
+            }
+        }
+    }
+
     deeplink {
-        host("koharu.to")
-        host("schale.network")
-        host("gehenna.jp")
-        host("niyaniya.moe")
-        host("seia.to")
-        host("shupogaki.moe")
-        host("hoshino.one")
         path("/g/..*/..*")
     }
 }

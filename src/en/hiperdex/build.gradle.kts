@@ -1,18 +1,20 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "Hiperdex"
-    className = "Hiperdex"
-    versionCode = 29
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
-    theme = "madara"
-    baseUrl = "https://hiperdex.com"
-}
+    versionCode = 81
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
+    theme = "hiper"
 
-dependencies {
-
-    implementation(project(":lib:randomua"))
+    source {
+        lang = "en"
+        baseUrl {
+            custom("https://hiperdex.tv")
+        }
+    }
 }

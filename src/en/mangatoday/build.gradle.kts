@@ -1,13 +1,18 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 keiyoushi {
     name = "MangaToday"
-    className = "MangaToday"
     versionCode = 0
-    contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    contentWarning = ContentWarning.MIXED
+    libVersion = "1.6"
     theme = "mangahub"
-    baseUrl = "https://mangatoday.fun"
+
+    source {
+        lang = "en"
+        baseUrl = "https://mangatoday.fun"
+    }
 }
