@@ -151,6 +151,7 @@ jobs:
             git push
             curl https://purge.jsdelivr.net/gh/Sanedrac1/extensions@repo/index.json || true
             curl https://purge.jsdelivr.net/gh/Sanedrac1/extensions@repo/index.pb || true
+            curl https://purge.jsdelivr.net/gh/Sanedrac1/extensions@repo/index.min.json || true
           else
             echo "No changes to commit"
           fi

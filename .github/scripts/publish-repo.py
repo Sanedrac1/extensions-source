@@ -184,6 +184,31 @@ with REPO_DIR.joinpath("index.json").open("w", encoding="utf-8") as f:
 with REPO_DIR.joinpath("index.pb").open("wb") as f:
     f.write(gzip.compress(index.SerializeToString(deterministic=True), mtime=0))
 
+legacy_min_list = []
+for ext in final_extensions:
+    sources = []
+    for s in ext.sources:
+        sources.append({
+            "name": s.name,
+            "lang": s.language,
+            "id": str(s.id),
+            "baseUrl": s.homeUrl,
+        })
+    apk_filename = ext.resources.apkUrl.split("/")[-1] if ext.resources.apkUrl else f"{ext.packageName}.apk"
+    legacy_min_list.append({
+        "name": f"Tachiyomi: {ext.name}",
+        "pkg": ext.packageName,
+        "apk": apk_filename,
+        "lang": ext.sources[0].language if ext.sources else "es",
+        "code": ext.versionCode,
+        "version": ext.versionName,
+        "nsfw": 1 if ext.contentWarning != 0 else 0,
+        "sources": sources,
+    })
+
+with REPO_DIR.joinpath("index.min.json").open("w", encoding="utf-8") as f:
+    json.dump(legacy_min_list, f, separators=(',', ':'))
+
 with release_assets_path.open("w", encoding="utf-8") as f:
     json.dump(updated_release_assets, f, indent=2, sort_keys=True)
     f.write("\n")
