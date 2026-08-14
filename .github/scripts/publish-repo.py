@@ -18,8 +18,8 @@ ARTIFACTS_DIR = Path.home() / "apk-artifacts"
 # The checked-out `repo` branch we publish into (the working directory).
 REPO_DIR = Path.cwd()
 
-ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/keiyoushi/extensions-source@main"
-REPO_NAME = "keiyoushi/extensions"
+ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/Sanedrac1/extensions-source@main"
+REPO_NAME = "Sanedrac1/extensions"
 RELEASE_BASE_URL = f"https://github.com/{REPO_NAME}/releases/download"
 ASSET_LIMIT = 495  # Actual limit is 1000 but we upload 2 items per extension.
 RETRY_ATTEMPTS = 4
@@ -163,12 +163,11 @@ final_extensions.extend(ext for ext, _, _, _ in new_extensions)
 final_extensions.sort(key=lambda ext: ext.packageName)
 
 index = index_pb2.Index(
-    name="Keiyoushi",
-    badgeLabel="KEI",
+    name="Sanedrac1",
+    badgeLabel="SAN",
     signingKey="9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
     contact=index_pb2.Contact(
-        website="https://keiyoushi.github.io",
-        discord="https://discord.gg/3FbCpdKbdY",
+        website="https://github.com/Sanedrac1/extensions",
     ),
     extensionList=index_pb2.ExtensionList(extensions=final_extensions),
 )
