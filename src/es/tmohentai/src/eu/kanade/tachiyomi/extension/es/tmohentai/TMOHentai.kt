@@ -21,13 +21,11 @@ import org.jsoup.nodes.Element
 import rx.Observable
 
 @Source
-open class TMOHentai : HttpSource() {
+abstract class TMOHentai : HttpSource() {
 
     override val name = "TMOHentai"
 
     override val baseUrl = "https://tmohentai.app"
-
-    override val lang = "es"
 
     override val supportsLatest = true
 
