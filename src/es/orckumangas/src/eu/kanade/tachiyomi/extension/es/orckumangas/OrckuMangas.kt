@@ -112,13 +112,16 @@ abstract class OrckuMangas : HttpSource() {
 
             description = document.selectFirst("p.text-gray-300, div.card p")?.text()?.trim()
 
-            author = document.selectFirst("div:contains(Autor:), p:contains(Autor:)")?.text()
-                ?.substringAfter("Autor:")?.trim()
-            artist = document.selectFirst("div:contains(Artista:), p:contains(Artista:)")?.text()
-                ?.substringAfter("Artista:")?.trim()
+            author = document.selectFirst("div:has(> span:contains(Autor:))")?.ownText()?.trim()
+                ?.ifBlank { null }
+                ?: document.selectFirst("span:contains(Autor:)")?.parent()?.ownText()?.trim()
 
-            val statusText = document.selectFirst("div:contains(Estado:), p:contains(Estado:)")?.text()
-                ?.substringAfter("Estado:")?.trim()
+            artist = document.selectFirst("div:has(> span:contains(Artista:))")?.ownText()?.trim()
+                ?.ifBlank { null }
+                ?: document.selectFirst("span:contains(Artista:)")?.parent()?.ownText()?.trim()
+
+            val statusText = document.selectFirst("div:has(> span:contains(Estado:))")?.ownText()?.trim()
+                ?: document.selectFirst("span:contains(Estado:)")?.parent()?.ownText()?.trim()
             status = parseStatus(statusText)
 
             genre = document.select("a[href*='genre=']").joinToString { it.text().trim() }
@@ -135,17 +138,42 @@ abstract class OrckuMangas : HttpSource() {
 
     // ============================== Chapter List ==============================
     override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        return document.select("a[href*='capitulo?id=']").map { element ->
-            SChapter.create().apply {
-                val fullText = element.text()
-                val chapMatch = Regex("""Cap\.?\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(fullText)
-                name = chapMatch?.value ?: element.selectFirst("span, div")?.text()?.trim() ?: fullText.trim()
-                setUrlWithoutDomain(element.attr("abs:href"))
+        val queryId = response.request.url.queryParameter("id") ?: return emptyList()
 
-                date_upload = parseRelativeDate(fullText)
+        var page = 1
+        var document = response.asJsoup()
+        val chapterList = mutableListOf<SChapter>()
+
+        while (true) {
+            val chapterElements = document.select("a[href*='capitulo?id=']")
+            if (chapterElements.isEmpty()) break
+
+            val parsedChapters = chapterElements.map { element ->
+                SChapter.create().apply {
+                    val fullText = element.text()
+                    val chapMatch = Regex("""Cap\.?\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(fullText)
+                    name = chapMatch?.value ?: element.selectFirst("span, div")?.text()?.trim() ?: fullText.trim()
+                    setUrlWithoutDomain(element.attr("abs:href"))
+
+                    date_upload = parseRelativeDate(fullText)
+                }
             }
-        }.distinctBy { it.url }
+
+            chapterList.addAll(parsedChapters)
+
+            val hasNextPage = document.selectFirst("a[href*='page=${page + 1}']") != null ||
+                document.selectFirst("a:contains(Siguiente)") != null ||
+                chapterElements.size >= 20
+
+            if (!hasNextPage) break
+
+            page++
+            val pageUrl = "$baseUrl/ficha?id=$queryId&page=$page".toHttpUrl()
+            val nextResponse = client.newCall(GET(pageUrl, headers)).execute()
+            document = nextResponse.asJsoup()
+        }
+
+        return chapterList.distinctBy { it.url }
     }
 
     private fun parseRelativeDate(dateStr: String): Long {
