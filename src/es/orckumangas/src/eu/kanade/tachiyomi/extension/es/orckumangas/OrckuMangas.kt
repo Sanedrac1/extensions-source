@@ -137,6 +137,16 @@ abstract class OrckuMangas : HttpSource() {
     }
 
     // ============================== Chapter List ==============================
+    override fun chapterListRequest(manga: SManga): Request {
+        val queryId = manga.url.substringAfter("id=").substringBefore("&")
+        val url = "$baseUrl/ficha".toHttpUrl().newBuilder()
+            .addQueryParameter("id", queryId)
+            .addQueryParameter("page", "1")
+            .addQueryParameter("order", "desc")
+            .build()
+        return GET(url, headers)
+    }
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val queryId = response.request.url.queryParameter("id") ?: return emptyList()
 
@@ -168,7 +178,7 @@ abstract class OrckuMangas : HttpSource() {
             if (!hasNextPage) break
 
             page++
-            val pageUrl = "$baseUrl/ficha?id=$queryId&page=$page".toHttpUrl()
+            val pageUrl = "$baseUrl/ficha?id=$queryId&page=$page&order=desc".toHttpUrl()
             val nextResponse = client.newCall(GET(pageUrl, headers)).execute()
             document = nextResponse.asJsoup()
         }
