@@ -13,3 +13,5 @@ generated-src/
 .kotlin
 *.jks
 sync-upstream.bat
+.vscode/
+scratch/
