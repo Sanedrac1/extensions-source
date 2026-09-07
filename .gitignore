@@ -15,3 +15,5 @@ generated-src/
 sync-upstream.bat
 .vscode/
 scratch/
+__pycache__/
+*.pyc

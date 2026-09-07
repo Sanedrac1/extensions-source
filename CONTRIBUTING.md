@@ -38,8 +38,9 @@ or fix them directly by submitting a Pull Request.
         - [JSON serialization - `toJsonString` / `toJsonRequestBody`](#json-serialization---tojsonstring--tojsonrequestbody)
         - [JSON models (DTOs) and serialization](#json-models-dtos-and-serialization)
         - [Protobuf parsing and serialization - `parseAsProto` / `toRequestBodyProto`](#protobuf-parsing-and-serialization---parseasproto--torequestbodyproto)
-        - [Date parsing - `Instant.parseOrNull` / `java.time`](#date-parsing---instantparseornull--javatime)
+        - [Date parsing - `tryParse` helpers](#date-parsing---tryparse-helpers)
         - [HTTP requests - `OkHttpClient.get` / `post` / `put` / `head`](#http-requests---okhttpclientget--post--put--head)
+        - [Custom cookies - `addCookie`](#custom-cookies---addcookie)
         - [WebView execution - `runWebView` / `getLocalStorage`](#webview-execution---runwebview--getlocalstorage)
         - [Filter helpers - `firstInstance` / `firstInstanceOrNull`](#filter-helpers---firstinstance--firstinstanceornull)
         - [SharedPreferences - `getPreferences` / `getPreferencesLazy`](#sharedpreferences---getpreferences--getpreferenceslazy)
@@ -54,7 +55,6 @@ or fix them directly by submitting a Pull Request.
       - [KeiSource](#keisource)
       - [Main class key variables](#main-class-key-variables)
     - [HTML and Image Processing](#html-and-image-processing)
-    - [OkHttp and Network](#okhttp-and-network)
     - [Extension call flow](#extension-call-flow)
       - [Popular Manga](#popular-manga)
       - [Latest Manga](#latest-manga)
@@ -353,6 +353,7 @@ At least one `source {}` block is required for every extension.
 | `contentWarning` | Content safety classification. Must be set explicitly to one of `ContentWarning.SAFE`, `ContentWarning.MIXED`, or `ContentWarning.NSFW`.                                                                                                  |
 | `libVersion`     | The extension library version. All new extensions must set this to `"1.6"` and implement `KeiSource` (see [Extension main class](#extension-main-class)). `"1.4"` is legacy and only found in extensions that have not yet been migrated. |
 | `theme`          | Name of a multi-source theme from `lib-multisrc/` to inherit from (e.g. `"madara"`). When set, the extension's version code is `theme.baseVersionCode + versionCode`.                                                                     |
+| `pkgName`        | Overrides the application ID suffix (defaults to `<lang>.<source dir>` derived from the module path). Only needed when moving a module to a different directory - see [Moving a source to a different directory](#moving-a-source-to-a-different-directory). |
 | `source {}`      | Declares one source (or multiple, for multi-language or multi-mirror extensions) using KSP code generation. This block is mandatory. See [Source declaration](#source-declaration).                                                       |
 | `deeplink {}`    | Declares a URL deeplink intent filter. See [URL intent filter](#url-intent-filter).                                                                                                                                                       |
 
@@ -361,7 +362,7 @@ With the example used above, the version would be `1.6.1`.
 
 ### Source declaration
 
-Sources are registered through `source {}` blocks in `build.gradle.kts`, combined with the `@Source` annotation on your source class. The build system uses KSP to generate a subclass (`ExtensionGenerated`) that automatically injects `name`, `lang`, `id`, and `baseUrl`- you no longer need to declare them manually in Kotlin.
+Sources are registered through `source {}` blocks in `build.gradle.kts`, combined with the `@Source` annotation on your source class. The build system uses KSP to generate an entry-point subclass (`keiyoushi.source.Generated`) that automatically injects `name`, `lang`, `id`, and `baseUrl`- you no longer need to declare them manually in Kotlin.
 
 #### Annotate your source class
 
@@ -490,7 +491,7 @@ keiyoushi {
 }
 ```
 
-The generated `ExtensionGenerated` class implements `SourceFactory` automatically. You do not need to implement `SourceFactory` yourself.
+The generated `keiyoushi.source.Generated` class implements `SourceFactory` automatically. You do not need to implement `SourceFactory` yourself.
 
 ### Core dependencies
 
@@ -504,15 +505,14 @@ Referencing the actual implementation will help with understanding extensions' c
 #### lib tools
 
 The `lib/` directory contains reusable Gradle modules that solve common problems shared across
-multiple extensions, such as cookie injection, image descrambling, JavaScript deobfuscation, and
-more. Before implementing something from scratch, check whether an existing lib already covers your
+multiple extensions, such as image descrambling, JavaScript deobfuscation, and more. Before
+implementing something from scratch, check whether an existing lib already covers your
 use case. Each lib is self-documented via KDoc comments and/or a README in its own folder.
 
 #### Available libs
 
 | Module                                                                                                    | Description                                                                             |
 |-----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| [`lib-cookieinterceptor`](https://github.com/keiyoushi/extensions-source/tree/main/lib/cookieinterceptor) | Injects cookies into OkHttp requests for a given domain                                 |
 | [`lib-cryptoaes`](https://github.com/keiyoushi/extensions-source/tree/main/lib/cryptoaes)                 | AES-CBC decryption compatible with CryptoJS; JSFuck deobfuscation                       |
 | [`lib-dataimage`](https://github.com/keiyoushi/extensions-source/tree/main/lib/dataimage)                 | Decodes base64 `data:image` strings into mock URLs that OkHttp can handle               |
 | [`lib-e4p`](https://github.com/keiyoushi/extensions-source/tree/main/lib/e4p)                             | Decodes and decrypts E4P-format manga page archives (TIFF/XEBP)                         |
@@ -700,62 +700,54 @@ If you only need to work with raw bytes, you can also use `.decodeProto()` and `
 
 Do not create a local `private val proto: ProtoBuf by injectLazy()` unless you specifically need a custom configuration. For standard parsing, the global instance is already available and the `parseAsProto` helpers use it automatically.
 
-##### Date parsing - `Instant.parseOrNull` / `java.time`
+##### Date parsing - `tryParse` helpers
 
-For **ISO-8601** date strings (e.g. `2024-03-05T12:30:00Z`), prefer `kotlin.time.Instant.parseOrNull`:
+Use the date helpers from `keiyoushi.utils` instead of parsing dates manually. They accept nullable
+strings, return epoch milliseconds, and return `0L` when parsing fails.
+
+For a self-describing ISO-8601 instant, such as `2024-01-06T00:00:00Z` or
+the equivalent `2024-01-06T01:00:00+01:00`, use the `kotlin.time` helper:
 
 ```kotlin
+import keiyoushi.utils.tryParse
 import kotlin.time.Instant
 
-chapter.date_upload = Instant.parseOrNull(dateStr)?.toEpochMilliseconds() ?: 0L
+chapter.date_upload = Instant.tryParse(dateStr)
 ```
 
-It returns `null` on a malformed string instead of throwing, and needs no format pattern, locale, or
-timezone handling - `parseOrNull` only accepts strict ISO-8601 (with an explicit `Z` or offset), so
-fall back to `java.time` for anything else (e.g. `dd MMM yyyy`, or a site-local format with no
-offset).
+For a site-specific format, declare a `java.time.format.DateTimeFormatter` at class or file level and
+use the helper that matches the information in the input:
 
-For those non-ISO formats, prefer `java.time` (`DateTimeFormatter` with `LocalDate`/`LocalDateTime`/
-`OffsetDateTime`) over `SimpleDateFormat`, which is discouraged for new code. Wrap the parse in
-`runCatching` so a malformed or unexpected string falls back to `0L` instead of crashing:
+- `tryParseDate` for a date without a time. It resolves to the start of the day in the supplied zone.
+- `tryParseDateTime` for a local date and time whose zone is supplied separately.
+- `tryParseZonedDateTime` when the parsed text contains the offset or zone that should determine the
+  instant.
 
 ```kotlin
-import java.time.LocalDate
-import java.time.ZoneOffset
+import keiyoushi.utils.tryParseDate
+import keiyoushi.utils.tryParseDateTime
+import keiyoushi.utils.tryParseZonedDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-// Declare the formatter at class/file level - creating one is not free:
 private val dateFormat = DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.ENGLISH)
+private val dateTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+private val zonedDateTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-chapter.date_upload = runCatching {
-    LocalDate.parse(dateStr, dateFormat).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-}.getOrDefault(0L)
+chapter.date_upload = dateFormat.tryParseDate(dateStr, ZoneId.of("Europe/London"))
+chapter.date_upload = dateTimeFormat.tryParseDateTime(dateStr, ZoneId.of("Asia/Tokyo"))
+chapter.date_upload = zonedDateTimeFormat.tryParseZonedDateTime(dateStr)
 ```
 
-If a site mixes ISO and non-ISO shapes in the same field (rare, but happens), chain the attempts with
-`recoverCatching` instead of hand-rolling detection logic:
+The date and local date-time helpers default to `ZoneId.systemDefault()`. Pass an explicit zone when
+the site's zone is known so results do not depend on the user's device. Use the appropriate `Locale`
+when a pattern contains locale-sensitive text such as month names. Offset and zone pattern letters
+must not be quoted; for example, use `XXX`, not a literal `'Z'`, when calling
+`tryParseZonedDateTime`.
 
-```kotlin
-runCatching { Instant.parse(dateStr).toEpochMilliseconds() }
-    .recoverCatching { LocalDate.parse(dateStr, dateFormat).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() }
-    .getOrDefault(0L)
-```
-
-Only reach for `SimpleDateFormat` + `keiyoushi.utils.tryParse` if `java.time` genuinely can't express
-the pattern you need; it is otherwise discouraged in new code.
-
-Two common mistakes to avoid, regardless of which API you use:
-
-- **Always set `Locale.ROOT`** (or `Locale.ENGLISH` for `java.time`, which requires a non-root locale for some symbol sets), unless the pattern contains locale-sensitive text (such as month names), in which case use the appropriate locale.
-- **Set the timezone/offset** if known, either because the site's region is known or because the pattern uses a literal `'Z'`.
-
-  ```kotlin
-  // Wrong: 'Z' is treated as a literal character, no offset is applied
-  DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-  // Correct, if you must parse this shape by hand at all - prefer Instant.parseOrNull instead:
-  LocalDateTime.parse(dateStr, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).toInstant(ZoneOffset.UTC)
-  ```
+Do not use `SimpleDateFormat` for new code. Its `keiyoushi.utils.tryParse` overload is deprecated in
+favor of these `kotlin.time` and `java.time` helpers.
 
 ##### HTTP requests - `OkHttpClient.get` / `post` / `put` / `head`
 
@@ -783,6 +775,47 @@ val response = client.post(url, headers, body)
 - `get`/`head` also take a `cacheControl` (defaults to a 10-minute max-age).
 - Always wrap the returned `Response` in `response.use { ... }` or consume it with `parseAs`/`asJsoup`, which close it for you.
 
+##### Custom cookies - `addCookie`
+
+Use `keiyoushi.network.addCookie` on an `OkHttpClient.Builder` to inject custom cookies while
+preserving unrelated cookies already attached to the request. If the request already contains a
+cookie with the same name, the configured value replaces it. Inside an `HttpSource`, the domain
+defaults to the source's current `baseUrl` and is resolved again for every request, so generated
+mirror and custom-URL preferences keep working after a runtime change:
+
+```kotlin
+import keiyoushi.network.addCookie
+
+override val client = network.client.newBuilder()
+    .addCookie(
+        listOf(
+            "adult" to "1",
+            "reader" to "web",
+            "quality" to "high",
+        ),
+    )
+    .build()
+```
+
+Pass a lambda when cookie values must also be resolved for every request:
+
+```kotlin
+.addCookie { listOf("locale" to localePreference()) }
+```
+
+For a domain unrelated to `baseUrl`, pass a domain lambda. Calls can be chained to configure
+multiple domains; configurations are checked in call order and the first matching domain is used:
+
+```kotlin
+network.client.newBuilder()
+    .addCookie("site-cookie" to "1")
+    .addCookie({ apiUrl.toHttpUrl().host }, "api-cookie" to "1")
+    .build()
+```
+
+Do not manually set the `Cookie` header for this purpose. Doing so replaces all existing cookies,
+including Cloudflare cookies set through WebView, which can break login and challenge solving.
+
 ##### WebView execution - `runWebView` / `getLocalStorage`
 
 When a source needs a real browser environment (e.g. to solve a JS challenge, run obfuscated
@@ -802,9 +835,8 @@ val html = runWebView<String> {
 }
 ```
 
-- `runWebView(session, timeout, configure)` suspends until `resolve`/`reject` is called inside `configure`, or `timeout` (default 30s) elapses; it always runs on the main thread internally.
-- The `WebViewScope` DSL exposes: `javaScriptEnabled`/`domStorageEnabled`/`blockImages`/`useWideViewPort`/`loadWithOverviewMode`/`userAgent` settings, `useOkHttpNetwork` (routes WebView requests through the app's own OkHttp client), `onPageStarted`/`onPageFinished`/`onReceivedError` hooks, `interceptRequest` to inspect/replace/block resource loads, `jsBridge(name, handler)` to expose a `window.<name>.post(message)` callback from the page, `loadUrl`/`loadData`, `evaluateJs`, and `poll(interval)` to repeat a check until resolved.
-- Pass a shared `WebViewSession` if the same source needs to reuse one WebView instance across multiple calls (e.g. to keep cookies/state) instead of spinning up a new one each time; it is torn down automatically after an idle timeout.
+- `runWebView(timeout, configure)` suspends until `resolve`/`reject` is called inside `configure`, or `timeout` (default 30s) elapses; it always runs on the main thread internally.
+- The `WebViewScope` DSL exposes: `javaScriptEnabled`/`domStorageEnabled`/`blockImages`/`useWideViewPort`/`loadWithOverviewMode`/`userAgent` settings, `onPageStarted`/`onPageFinished`/`onReceivedError` hooks, `interceptRequest` to inspect/replace/block resource loads, `jsBridge(name, handler)` to expose a `window.<name>.post(message)` callback from the page, `loadUrl`/`loadData`, `evaluateJs`, and `poll(interval)` to repeat a check until resolved. Setting `userAgent` also spoofs the `Sec-CH-UA` client hints to match it, instead of advertising the real WebView brand and version.
 - For the common case of just reading a `localStorage` value after loading a page, use the ready-made `getLocalStorage(url, key)` helper instead of writing your own `runWebView` call.
 - `runWebViewBlocking(call, ...)` exists for non-suspend call sites (e.g. inside an OkHttp interceptor where you must pass the interceptor's chain.call()) - only use it there, never from a suspend function.
 
@@ -1013,7 +1045,7 @@ extending `HttpSource` directly are legacy (`libVersion = "1.4"`); do not use `H
 for new sources.
 
 > [!NOTE]
-> `className` is set to `ExtensionGenerated` automatically by the build system.
+> `className` is set to `keiyoushi.source.Generated` automatically by the build system.
 
 | Class              | Description                                                                                                                                                                                     |
 |--------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -1119,35 +1151,6 @@ Behavior `KeiSource` gives you for free:
 - **Prefer stable selectors:** Avoid relying on volatile auto-generated CSS class names (e.g., `styles_Card__jN8og`) or complex regex for parsing. Prefer stable structural selectors.
 - **Use `ownText()` to avoid mutation:** To get text from an element without including text from its children, use `.ownText()`. This avoids the need to select and remove child elements (`.select().remove()`) or mutate the document.
 - **Parse status using `.lowercase()`:** When comparing strings for status parsing (e.g., `contains("ongoing")`), prefer calling `.lowercase()` on the source string once instead of using `ignoreCase = true` on multiple `contains` checks.
-
-### OkHttp and Network
-
-> [!NOTE]
-> `GET()`/`POST()` below build a `Request` object without executing it. On `KeiSource`, prefer the
-> `OkHttpClient.get`/`post`/`put`/`head` suspend helpers (see
-> [HTTP requests](#http-requests---okhttpclientget--post--put--head)), which build and execute the
-> call in one step; reach for `GET()`/`POST()` directly only if you need the `Request` itself
-> (e.g. to pass to something other than `client`).
-
-- **Always pass `headers`:** Every `GET()` and `POST()` call must include `headers` (or a custom headers object). Omitting headers will send the request without the app's default User-Agent and other expected headers.
-- **Referer header trailing slash:** When setting a `Referer` header pointing to the site root, always include a trailing slash: `.add("Referer", "$baseUrl/")`. This matches what browsers send and is required by some servers.
-- **Static URLs don't need `HttpUrl.Builder`:** Use string interpolation directly for URLs with no dynamic query parameters. Only use `HttpUrl.Builder` (or `.toHttpUrl().newBuilder()`) when query parameters need URL-encoding or the URL is built conditionally.
-
-  ```kotlin
-  // Unnecessary builder for a static URL:
-  val url = "$baseUrl/manga".toHttpUrl().newBuilder().build()
-  // Prefer:
-  client.get("$baseUrl/manga")
-  ```
-
-- **GraphQL Queries:** If you are sending GraphQL requests, use Kotlin's raw multi-dollar string interpolation (`$$"""..."""`) for your queries. This prevents having to escape every JSON variable `$` symbol manually. For building the request and parsing the response, prefer the `graphQLPost` and `parseGraphQLAs` helpers in `keiyoushi.utils`.
-- **Empty checks on `.text()`:** Because Jsoup's `.text()` automatically trims whitespace, you can use `.isNotEmpty()` instead of `.isNotBlank()` when checking for empty strings. The same applies to `.ownText()`. This also means you should not use `.trim()` with these functions.
-- **Customize the client via `configureClient()`, not `client` directly:** On `KeiSource`, `client` is `final`; override `OkHttpClient.Builder.configureClient()` instead (see [KeiSource](#keisource)) - e.g. `override fun OkHttpClient.Builder.configureClient() = rateLimit(...)`.
-- **Never use `Thread.sleep()`:** Do not use `Thread.sleep()` for rate limiting. Use the `keiyoushi.network.rateLimit` builder extension function on your `OkHttpClient.Builder` instead.
-- **Never call `client.newCall(...).execute()` directly from a suspend function:** Use the suspend `OkHttpClient.get`/`post`/`put`/`head` helpers instead (see [HTTP requests](#http-requests---okhttpclientget--post--put--head)); they suspend properly instead of blocking a thread. This doesn't apply to genuinely synchronous, non-suspend callback contexts (an `OkHttp` interceptor, a WebView bridge, or the `fetch` callback passed to `readZipDirectory`/`readZipEntry`), where there's no suspend context to hook into and a blocking `.execute()` is expected - see [ZIP streaming](#zip-streaming---readzipdirectory--readzipentry) for an example.
-- **Pass `HttpUrl` directly:** `client.get`/`post`/`put`/`head` and the `GET()`/`POST()` builders all accept an `HttpUrl` object. Do not call `.toString()` on a built `HttpUrl` before passing it.
-- **Use `HttpUrl` for URL manipulation:** When parsing or extracting parts of a URL, prefer using `HttpUrl` methods (like `pathSegments` property, `encodedPathSegments`, or `queryParameter("id")`) over manual string splitting (e.g., `.split("/")`) or regex. This ensures proper separation of concerns and protects against unexpected inputs-such as URL fragments or query parameters-without you needing to manually account for all edge cases.
-- **Use `CookieInterceptor` for custom cookies:** When you need to inject custom cookies into requests, use the `lib-cookieinterceptor` dependency instead of manually adding `Cookie` headers. Manually setting the `Cookie` header overrides all cookies (including Cloudflare cookies set via WebView), breaking login and challenge solving.
 
 ### Extension call flow
 
@@ -1299,7 +1302,7 @@ open class UriPartFilter(displayName: String, private val vals: Array<Pair<Strin
 
 ### Misc notes
 
-- **Use `asJsoup()`:** Instead of manually reading the response body and parsing it with Jsoup (`Jsoup.parse(response.body.string())`), use the app's built-in extension function: `response.asJsoup()` (requires `import eu.kanade.tachiyomi.util.asJsoup`).
+- **Use `asJsoup()`:** Instead of manually reading the response body and parsing it with Jsoup (`Jsoup.parse(response.body.string())`), use the built-in extension function: `response.asJsoup()` (`import keiyoushi.utils.asJsoup`), which streams the body and closes the response when done.
 - **Jsoup `.text()` is already trimmed:** Calling `element.text().trim()` is redundant because Jsoup automatically normalizes and trims whitespace. Just use `element.text()`.
 - **Omit default `joinToString` separator:** The default separator for `joinToString` is already `", "`. Do not pass it explicitly. Use `joinToString { it.text() }` instead of `joinToString(", ") { it.text() }`, and `joinToString()` instead of `joinToString(", ")`.
 - **Use named parameters for `Page`:** When instantiating `Page` objects, use the named parameter for the image URL: `Page(index, imageUrl = url)` instead of passing an empty string as the second argument (`Page(index, "", url)`).
@@ -1470,6 +1473,28 @@ The `id` also must be explicitly set to the old value if you change the `lang` a
 > If the source has also changed its theme, you can simply change
 > the `name` field in the source class and the Gradle file. By doing so,
 > a new `id` is generated and users will be forced to migrate.
+
+##### Moving a source to a different directory
+
+The application ID is derived from the module path (`src/<lang>/<name>` becomes
+`eu.kanade.tachiyomi.extension.<lang>.<name>`). When moving a source to a different directory
+(e.g. `en` to `all`, or a rename of the module directory), set `pkgName` in the new
+module's `build.gradle.kts` to the old path-derived suffix so the package name stays the same:
+
+```kotlin
+keiyoushi {
+    name = "New Name"
+    pkgName = "en.oldname" // <old lang>.<old dir name>
+    // ...
+}
+```
+
+The published APK keeps its old package name and file name, so users receive the move as a
+regular update instead of having to uninstall and reinstall. The Kotlin `package` declarations
+of the source code don't participate in the published identity - the entry point is generated
+at the fixed location `keiyoushi.source.Generated` - so they may be updated to match the new
+directory or left as-is. A PR check (`.github/scripts/audit-packages.py`) fails the build if
+two modules would produce the same application ID.
 
 ## Multi-source themes
 
@@ -1760,6 +1785,17 @@ command:
 // For a single apk, use this command
 $ ./gradlew src:<lang>:<source>:assembleDebug
 ```
+
+As a final check before submitting, run release lint on every Android module you touched:
+
+```console
+$ ./gradlew :src:<lang>:<source>:lintRelease
+```
+
+Run lint directly on shared modules, such as
+`./gradlew :lib-multisrc:<theme>:lintRelease` or `./gradlew :lib:<name>:lintRelease`.
+Linting only an extension that depends on a shared module does not reliably report issues in the
+dependency itself. If you explicitly changed `core/`, run `./gradlew :core:lintRelease` as well.
 
 ## Submitting the changes
 
