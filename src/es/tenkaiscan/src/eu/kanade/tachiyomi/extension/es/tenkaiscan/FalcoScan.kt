@@ -17,6 +17,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -37,33 +38,19 @@ abstract class FalcoScan : HttpSource() {
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/ranking", headers)
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/comics", headers)
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("section.trending div.row div.card").map { element ->
-            SManga.create().apply {
-                setUrlWithoutDomain(
-                    element.attr("onclick")
-                        .substringAfter("window.location.href='")
-                        .substringBefore("'"),
-                )
-                title = element.selectFirst("div.name > h4.color-white")!!.text()
-                thumbnail_url = element.selectFirst("img")?.imgAttr()
-            }
-        }
-        return MangasPage(mangas, false)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = parseMangaList(response.asJsoup())
 
     override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangas = document.select("section.trending div.row a").map { element ->
+        val mangas = document.select("section:has(h2:contains(Recientemente)) div.card-grid a.falco-card, div.card-grid a.falco-card, a.falco-card").map { element ->
             SManga.create().apply {
                 setUrlWithoutDomain(element.attr("href"))
-                title = element.selectFirst("div.content > h4.color-white")!!.text()
-                thumbnail_url = element.selectFirst("img")?.imgAttr()
+                title = element.selectFirst("div.info > h4")?.text() ?: ""
+                thumbnail_url = element.selectFirst("div.cover img")?.imgAttr()
             }
         }
         return MangasPage(mangas, false)
@@ -89,13 +76,14 @@ abstract class FalcoScan : HttpSource() {
         return GET(urlBuilder.build(), headers)
     }
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("section.trending div.row > div.col-xxl-9 > div.row > div > a").map { element ->
+    override fun searchMangaParse(response: Response): MangasPage = parseMangaList(response.asJsoup())
+
+    private fun parseMangaList(document: Document): MangasPage {
+        val mangas = document.select("div.list-grid a.falco-card, a.falco-card").map { element ->
             SManga.create().apply {
                 setUrlWithoutDomain(element.attr("href"))
-                title = element.selectFirst("div.content > h4.color-white")!!.text()
-                thumbnail_url = element.selectFirst("img")?.imgAttr()
+                title = element.selectFirst("div.info > h4")?.text() ?: ""
+                thumbnail_url = element.selectFirst("div.cover img")?.imgAttr()
             }
         }
         return MangasPage(mangas, false)
@@ -111,46 +99,48 @@ abstract class FalcoScan : HttpSource() {
 
     override fun mangaDetailsParse(response: Response): SManga = SManga.create().apply {
         val document = response.asJsoup()
-        document.selectFirst("div.page-content div.text-details")?.let { element ->
-            title = element.selectFirst("div.name-rating")?.text() ?: ""
-            description = element.select("p.sec:not(div.soft-details p)").text()
-            thumbnail_url = element.selectFirst("img.img-details")?.imgAttr()
-            element.selectFirst("div.soft-details")?.let { details ->
-                author = details.selectFirst("p:has(span:contains(Autor))")?.ownText()
-                artist = details.selectFirst("p:has(span:contains(Artista))")?.ownText()
-                status = details.selectFirst("p:has(span:contains(Status))")?.ownText()?.parseStatus() ?: SManga.UNKNOWN
-                genre = details.selectFirst("p:has(span:contains(Generos))")?.ownText()
-            }
+        title = document.selectFirst("div.series-main h1, h1")?.text() ?: ""
+        description = document.selectFirst("p.desc")?.text()
+
+        val coverStyle = document.selectFirst("div.series-cover, div.series-hero-bg")?.attr("style")
+        val rawCover = coverStyle?.let { style ->
+            val clean = style.substringAfter("url(", "").substringBefore(")", "")
+            clean.trim('\'', '"').takeIf { it.isNotEmpty() }
+        } ?: document.selectFirst("img.cover")?.imgAttr()
+
+        thumbnail_url = rawCover?.let {
+            if (it.startsWith("http")) it else "$baseUrl${if (it.startsWith("/")) "" else "/"}$it"
         }
+
+        genre = document.select("div.falco-tags span.falco-tag").joinToString { it.text() }
+        author = document.selectFirst("div.info-panel div.info-row:has(span.label:contains(Autor)) span.value")?.text()
+        artist = document.selectFirst("div.info-panel div.info-row:has(span.label:contains(Artista)) span.value")?.text()
+        status = document.selectFirst("div.info-panel div.info-row:has(span.label:contains(Status)) span.value")?.text()?.parseStatus() ?: SManga.UNKNOWN
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        return document.select("div.page-content div.card-caps").map { element ->
+        return document.select("div.chapters-grid a.chapter-card, a.chapter-card").map { element ->
             SChapter.create().apply {
-                setUrlWithoutDomain(
-                    element.attr("onclick")
-                        .substringAfter("window.location.href='")
-                        .substringBefore("'"),
-                )
-                name = element.selectFirst("div.text-cap span.color-white")!!.text()
-                date_upload = dateFormat.tryParse(element.selectFirst("div.text-cap span.color-medium-gray")?.text())
+                setUrlWithoutDomain(element.attr("href"))
+                name = element.selectFirst("div.ch-name")?.text() ?: ""
+                date_upload = dateFormat.tryParse(element.selectFirst("div.ch-date")?.text())
             }
         }
     }
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val canvases = document.select("div.page-content div.img-blade canvas.cap-canvas")
+        val canvases = document.select("canvas.cap-canvas")
         if (canvases.isNotEmpty()) {
             return canvases.mapIndexed { i, element ->
-                val src = element.absUrl("data-src")
+                val src = element.absUrl("data-src").ifEmpty { element.attr("data-src") }
                 val token = element.attr("data-token")
                 Page(i, imageUrl = "$src#$token")
             }
         }
 
-        return document.select("div.page-content div.img-blade img").mapIndexed { i, element ->
+        return document.select("div.img-blade img, div.reader img").mapIndexed { i, element ->
             Page(i, imageUrl = element.imgAttr())
         }
     }
@@ -177,7 +167,7 @@ abstract class FalcoScan : HttpSource() {
     }
 
     private fun String.parseStatus() = when (this.lowercase()) {
-        "en emisión" -> SManga.ONGOING
+        "en emisión", "en emision" -> SManga.ONGOING
         "finalizado" -> SManga.COMPLETED
         "cancelado" -> SManga.CANCELLED
         "en espera" -> SManga.ON_HIATUS
