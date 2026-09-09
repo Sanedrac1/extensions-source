@@ -75,8 +75,25 @@ abstract class IkigaiMangas :
         fetchDomainUrl()
         network.client.newBuilder()
             .addNetworkInterceptor(::nsfwCookieInterceptor)
+            .addNetworkInterceptor(::imageHeaderInterceptor)
             .rateLimit(1, 2.seconds) { it.host == baseUrlHost }
             .build()
+    }
+
+    private fun imageHeaderInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val host = request.url.host
+        if (host.contains("ikigaimangas.cloud")) {
+            val newRequest = request.newBuilder()
+                .header("Referer", "$baseUrl/")
+                .header("Accept", "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+                .header("Sec-Fetch-Dest", "image")
+                .header("Sec-Fetch-Mode", "no-cors")
+                .header("Sec-Fetch-Site", "cross-site")
+                .build()
+            return chain.proceed(newRequest)
+        }
+        return chain.proceed(request)
     }
 
     private fun nsfwCookieInterceptor(chain: Interceptor.Chain): Response {
@@ -356,6 +373,17 @@ abstract class IkigaiMangas :
         return document.select("section div.img > img, div.reader img").mapIndexed { i, element ->
             Page(i, imageUrl = element.attr("abs:src"))
         }
+    }
+
+    override fun imageRequest(page: Page): Request {
+        val imageHeaders = headersBuilder()
+            .set("Referer", "$baseUrl/")
+            .set("Accept", "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+            .set("Sec-Fetch-Dest", "image")
+            .set("Sec-Fetch-Mode", "no-cors")
+            .set("Sec-Fetch-Site", "cross-site")
+            .build()
+        return GET(page.imageUrl!!, imageHeaders)
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
