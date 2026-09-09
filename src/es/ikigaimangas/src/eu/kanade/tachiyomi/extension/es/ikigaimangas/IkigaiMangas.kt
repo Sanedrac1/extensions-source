@@ -32,6 +32,7 @@ import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import rx.Observable
 import java.text.SimpleDateFormat
@@ -66,7 +67,7 @@ abstract class IkigaiMangas :
         } catch (_: Exception) {}
     }
 
-    private val imageCdnUrl: String = "https://image2.ikigaimangas.cloud"
+    private val imageCdnUrl: String = "https://image3.ikigaimangas.cloud"
 
     override val supportsLatest: Boolean = true
 
@@ -123,12 +124,15 @@ abstract class IkigaiMangas :
 
     override fun popularMangaParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangaList = document.select("div.grid > div.card").map { element ->
+        val mangaList = document.select("div.grid > div.card, ul.grid a.card").mapNotNull { element ->
+            val img = element.selectFirst("img") ?: return@mapNotNull null
+            val titleEl = element.selectFirst(".card-body .card-title") ?: element.selectFirst("h3") ?: return@mapNotNull null
+            val linkEl = element.selectFirst(".card-actions > a.btn[href]") ?: element
+            val href = linkEl.attr("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             SManga.create().apply {
-                thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-                title = element.selectFirst(".card-body .card-title")!!.text()
-                val seriesUrl = element.selectFirst(".card-actions > a.btn[href]")!!.attr("href")
-                url = seriesUrl.substringAfterLast("/series/").substringBefore("/")
+                thumbnail_url = img.attr("abs:src")
+                title = titleEl.text().trim()
+                url = href.substringAfterLast("/series/").substringBefore("/")
             }
         }
         return MangasPage(mangaList, false)
@@ -196,6 +200,13 @@ abstract class IkigaiMangas :
                         }
                     }
                 }
+                is TeamFilter -> {
+                    filter.state.forEach { team ->
+                        if (team.state) {
+                            url.addQueryParameter("equipos[]", team.id.toString())
+                        }
+                    }
+                }
                 is SortByFilter -> {
                     url.addQueryParameter("ordenar", filter.selected)
                     url.addQueryParameter("direccion", if (filter.state?.ascending == true) "asc" else "desc")
@@ -231,11 +242,14 @@ abstract class IkigaiMangas :
 
     override fun searchMangaParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangaList = document.select("section[aria-labelledby=archive-heading] > ul.grid a.card").map { element ->
+        val mangaList = document.select("section[aria-labelledby=archive-heading] > ul.grid a.card, section.container ul.grid a.card, ul.grid a.card").mapNotNull { element ->
+            val img = element.selectFirst("img") ?: return@mapNotNull null
+            val titleEl = element.selectFirst("h3") ?: element.selectFirst(".card-title") ?: return@mapNotNull null
+            val href = element.attr("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             SManga.create().apply {
-                thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-                title = element.selectFirst("h3")!!.text()
-                url = element.attr("href").substringAfterLast("/series/").substringBefore("/")
+                thumbnail_url = img.attr("abs:src")
+                title = titleEl.text().trim()
+                url = href.substringAfterLast("/series/").substringBefore("/")
             }
         }
         val hasNextPage = document.selectFirst("nav[aria-label=pagination] > a:last-child:not([class*=btn-disabled])") != null
@@ -264,14 +278,13 @@ abstract class IkigaiMangas :
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
-        return document.selectFirst("article.card")!!.let { element ->
-            SManga.create().apply {
-                title = element.selectFirst(".card-body .card-title")!!.text()
-                thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-                description = element.selectFirst(".card-body > p")?.text()
-                status = parseStatus(element.selectFirst("figure > ul a[href*=?estados]")?.text())
-                genre = element.select(".card-body > ul > li > a[href*=?generos]").joinToString { it.text().trim() }
-            }
+        val element = document.selectFirst("article.card") ?: document.selectFirst("article")!!
+        return SManga.create().apply {
+            title = (element.selectFirst("h1.card-title, .card-body .card-title, h1, h2, h3"))!!.text().trim()
+            thumbnail_url = element.selectFirst("img")?.attr("abs:src")
+            description = element.selectFirst(".card-body > p, p")?.text()?.trim()
+            status = parseStatus(element.selectFirst("figure > ul a[href*='estados'], a[href*='estados']")?.text())
+            genre = element.select(".card-body a[href*='generos'], a[href*='generos']").joinToString { it.text().trim() }
         }
     }
 
@@ -291,7 +304,7 @@ abstract class IkigaiMangas :
         do {
             val request = chapterListRequest(manga.url, page)
             val document = client.newCall(request).execute().asJsoup()
-            val chapters = document.select("section.card > ul.grid a.card").map(::chapterFromElement)
+            val chapters = document.select("ul.grid a.card-side[href*=/capitulo/], ul.grid a.card[href*=/capitulo/], section.card > ul.grid a.card").map(::chapterFromElement)
             if (chapters.isEmpty()) break
             chapterList.addAll(chapters)
             page++
@@ -308,23 +321,39 @@ abstract class IkigaiMangas :
 
     private fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         setUrlWithoutDomain(element.attr("abs:href"))
-        name = element.selectFirst(".card-body .card-title")!!.text()
+        val titleEl = element.selectFirst(".card-body .card-title") ?: element.selectFirst(".card-title") ?: element.selectFirst("h3") ?: element
+        name = titleEl.text().trim()
         val dateString = element.selectFirst("time")?.attr("datetime")?.substringBeforeLast("(")?.trim()
         date_upload = dateFormat.tryParse(dateString)
     }
+
+    private val pageRegex = """https?://[^\s"'\\<>]+/series/\d+/\d+/[^\s"'\\<>]+\.(?:webp|jpg|jpeg|png)""".toRegex(RegexOption.IGNORE_CASE)
 
     override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val request = response.request
-        var document = response.asJsoup()
+        val bodyString = response.body.string()
+
+        val imgMatches = pageRegex.findAll(bodyString)
+            .map { it.value }
+            .distinct()
+            .toList()
+
+        if (imgMatches.isNotEmpty()) {
+            return imgMatches.mapIndexed { i, url ->
+                Page(i, imageUrl = url)
+            }
+        }
+
+        var document = org.jsoup.Jsoup.parse(bodyString, request.url.toString())
         document.selectFirst("button > span:contains(permitir nsfw)")?.let {
             val newRequest = request.newBuilder()
                 .enableNsfw(true)
                 .build()
             document = client.newCall(newRequest).execute().asJsoup()
         }
-        return document.select("section div.img > img").mapIndexed { i, element ->
+        return document.select("section div.img > img, div.reader img").mapIndexed { i, element ->
             Page(i, imageUrl = element.attr("abs:src"))
         }
     }
@@ -339,6 +368,7 @@ abstract class IkigaiMangas :
         SortByFilter("Ordenar por", getSortProperties()),
         StatusFilter("Estados", getStatusFilters()),
         GenreFilter("Géneros", getGenreFilters()),
+        TeamFilter("Grupos", getTeamFilters()),
     )
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {

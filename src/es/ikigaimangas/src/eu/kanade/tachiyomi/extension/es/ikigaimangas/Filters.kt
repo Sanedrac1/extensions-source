@@ -8,6 +8,9 @@ class GenreFilter(title: String, genres: List<Genre>) : Filter.Group<Genre>(titl
 class Status(title: String, val id: Long) : Filter.CheckBox(title)
 class StatusFilter(title: String, statuses: List<Status>) : Filter.Group<Status>(title, statuses)
 
+class Team(title: String, val id: Long) : Filter.CheckBox(title)
+class TeamFilter(title: String, teams: List<Team>) : Filter.Group<Team>(title, teams)
+
 class SortByFilter(title: String, private val sortProperties: List<SortProperty>) :
     Filter.Sort(
         title,
@@ -93,4 +96,48 @@ fun getGenreFilters(): List<Genre> = listOf(
     Genre("Vida Escolar", 906409508232822787L),
     Genre("Yaoi", 906409432216403971L),
     Genre("Yuri", 906409472567017475L),
+)
+
+fun getTeamFilters(): List<Team> = listOf(
+    Team("Agus Scan", 1159963897850691587L),
+    Team("Ajce Translations", 906409876344340483L),
+    Team("Asian Lotus", 1101353340196061186L),
+    Team("Baco Scans", 1061110805753331713L),
+    Team("BaoBai_Scan", 999770512349265923L),
+    Team("Berserker Scan", 906409496056758275L),
+    Team("Bichotas Fansub", 961787977711583233L),
+    Team("Bighitler", 906409374971101187L),
+    Team("Cerberus Scans", 906398106035617795L),
+    Team("Churritos Scan", 906409415073759235L),
+    Team("Dragon Translation", 906409335735582723L),
+    Team("El Grimorio De La Witch", 906424179158581250L),
+    Team("Fluxia Scan", 1038427076726095874L),
+    Team("GODS OF ARDA SCAN", 906409985632698371L),
+    Team("Gu Scan", 1160495390387535873L),
+    Team("HadaScan", 906409442634825731L),
+    Team("Harem De Kira", 906409722157760515L),
+    Team("Ikigai", 1034297331986759681L),
+    Team("Inmortales", 1103395843340795905L),
+    Team("Invictus Scan", 906409382934151171L),
+    Team("Knight No Scanlation", 1085740186537525251L),
+    Team("LiontáriScan", 906409916686630915L),
+    Team("Lukelun fansub", 906423712055164930L),
+    Team("MangoScan", 906409371190722563L),
+    Team("MerakiScan", 906397904960651267L),
+    Team("Nartag", 1159045379221651459L),
+    Team("Neko Kawaii Scan", 906409348073717763L),
+    Team("Orckuro Translations", 906410144030064643L),
+    Team("Pastelitos fujoshii", 957863066463272961L),
+    Team("Pichulas Scan", 908855416685953027L),
+    Team("PununiScan", 906409518003585027L),
+    Team("Ragnarok Scanlation", 1169607386323714050L),
+    Team("RichtoScan", 1041876062917820419L),
+    Team("Riomy Scan", 1162488551331069955L),
+    Team("Shinra Tensei", 1093282307338108930L),
+    Team("Sisu Scan", 906409542107660291L),
+    Team("Spectrum Scan", 906409351802290179L),
+    Team("Starlight Translations", 906397890719318019L),
+    Team("Tecno Scan", 906409362829606915L),
+    Team("The Lonely Reader", 906409608911618051L),
+    Team("Tiranos Scan", 906409473310162947L),
 )
