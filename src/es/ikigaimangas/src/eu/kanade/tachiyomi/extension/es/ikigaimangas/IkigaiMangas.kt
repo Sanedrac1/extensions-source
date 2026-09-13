@@ -61,7 +61,11 @@ abstract class IkigaiMangas :
                 ?: return
             val script = initClient.newCall(GET("https://ikigaimangas.com/build/$scriptUrl", headers)).execute().body.string()
             val domain = script.substringAfter("i(\"").substringBefore("\"")
-            val host = initClient.newCall(GET(domain, headers)).execute().request.url.host
+            val host = try {
+                initClient.newCall(GET(domain, headers)).execute().request.url.host
+            } catch (_: Exception) {
+                domain.toHttpUrl().host
+            }
             val newDomain = "https://$host"
             preferences.edit().putString(BASE_URL_PREF, newDomain).apply()
         } catch (_: Exception) {}
@@ -241,20 +245,32 @@ abstract class IkigaiMangas :
         return GET(url.build(), headers)
     }
 
-    private fun getQuerySeriesList(): List<QwikSeriesDto> {
-        fetchDomainUrl()
-        val qfunc = getQfuncFromWebView(baseUrl, headers) ?: throw Exception("Ocurrio un error al obtener la lista de series")
+    private fun fetchSeriesListWithQfunc(qfunc: String): List<QwikSeriesDto> {
         val url = baseUrl.toHttpUrl().newBuilder()
             .addQueryParameter("qfunc", qfunc)
             .build()
-        val payload = """{"_entry":"1","_objs":["\u0002_#s_$qfunc",["0"]]}"""
+        val payload = "{\"_entry\":\"1\",\"_objs\":[\"\\u0002_#s_$qfunc\",[\"0\"]]}"
         val body = payload.toRequestBody()
         val headers = headersBuilder()
             .set("X-QRL", qfunc)
             .set("Content-Type", "application/qwik-json")
             .build()
         val response = client.newCall(POST(url.toString(), headers, body)).execute()
+        if (!response.isSuccessful) {
+            throw Exception("HTTP error ${response.code}")
+        }
         return response.parseAs<QwikData>().parseAsList<QwikSeriesDto>().also { seriesCache = it }
+    }
+
+    private fun getQuerySeriesList(): List<QwikSeriesDto> {
+        fetchDomainUrl()
+        return try {
+            fetchSeriesListWithQfunc(DEFAULT_QFUNC)
+        } catch (e: Exception) {
+            val qfunc = getQfuncFromWebView(baseUrl, headers)
+                ?: throw Exception("Ocurrio un error al obtener la lista de series: ${e.message}")
+            fetchSeriesListWithQfunc(qfunc)
+        }
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
@@ -525,6 +541,7 @@ abstract class IkigaiMangas :
     private fun Request.Builder.enableNsfw(flag: Boolean) = this.header(ENABLE_NSFW_HEADER, flag.toString())
 
     companion object {
+        private const val DEFAULT_QFUNC = "dijYfob0hJw"
         private const val SHOW_NSFW_PREF = "pref_show_nsfw"
         private const val BASE_URL_PREF = "overrideBaseUrl"
         private const val FETCH_DOMAIN_PREF = "fetchDomain"
