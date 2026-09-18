@@ -19,6 +19,8 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -30,9 +32,16 @@ abstract class FalcoScan : HttpSource() {
 
     private val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale("es"))
 
+    private val subClient by lazy {
+        network.client.newBuilder()
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .build()
+    }
+
     override val client = network.client.newBuilder()
         .protocols(listOf(Protocol.HTTP_1_1))
         .rateLimit(3) { it.host == baseUrlHost }
+        .addInterceptor(ImageInterceptor { subClient })
         .build()
 
     override fun headersBuilder() = super.headersBuilder()
@@ -131,23 +140,52 @@ abstract class FalcoScan : HttpSource() {
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val canvases = document.select("canvas.cap-canvas")
+        val canvases = document.select(".cap-canvas").filter {
+            it.hasAttr("data-manifest-src") || it.hasAttr("data-src")
+        }
         if (canvases.isNotEmpty()) {
             return canvases.mapIndexed { i, element ->
-                val src = element.absUrl("data-src").ifEmpty { element.attr("data-src") }
+                val isScrambled = element.attr("data-scrambled") == "1"
                 val token = element.attr("data-token")
-                Page(i, imageUrl = "$src#$token")
+                if (isScrambled) {
+                    val manifestSrc = element.absUrl("data-manifest-src").ifEmpty { element.attr("data-manifest-src") }
+                    val fragmentBase = element.absUrl("data-fragment-base").ifEmpty { element.attr("data-fragment-base") }
+                    val fragmentDir = element.attr("data-fragment-dir")
+                    val cleanBase = URLEncoder.encode(fragmentBase, "UTF-8")
+                    val cleanDir = URLEncoder.encode(fragmentDir, "UTF-8")
+                    Page(i, imageUrl = "$manifestSrc#scrambled=1&token=$token&base=$cleanBase&dir=$cleanDir")
+                } else {
+                    val src = element.absUrl("data-src").ifEmpty { element.attr("data-src") }
+                    Page(i, imageUrl = "$src#$token")
+                }
             }
         }
 
-        return document.select("div.img-blade img, div.reader img").mapIndexed { i, element ->
+        return document.select("div.img-blade img, div.reader img, #canvas-reader img").mapIndexed { i, element ->
             Page(i, imageUrl = element.imgAttr())
         }
     }
 
     override fun imageRequest(page: Page): Request {
         val imageUrl = page.imageUrl!!
-        if (imageUrl.contains("#")) {
+        if (imageUrl.contains("#scrambled=1")) {
+            val cleanUrl = imageUrl.substringBefore("#")
+            val params = imageUrl.substringAfter("#").split("&").associate {
+                val parts = it.split("=", limit = 2)
+                parts[0] to (parts.getOrNull(1) ?: "")
+            }
+            val token = params["token"] ?: ""
+            val base = URLDecoder.decode(params["base"] ?: "", "UTF-8")
+            val dir = URLDecoder.decode(params["dir"] ?: "", "UTF-8")
+            val imageHeaders = headersBuilder()
+                .add("X-Requested-With", "XMLHttpRequest")
+                .add("X-CSRF-TOKEN", token)
+                .add("X-Falco-Scrambled", "1")
+                .add("X-Falco-Base", base)
+                .add("X-Falco-Dir", dir)
+                .build()
+            return GET(cleanUrl, imageHeaders)
+        } else if (imageUrl.contains("#")) {
             val token = imageUrl.substringAfterLast("#")
             val cleanUrl = imageUrl.substringBeforeLast("#")
             val imageHeaders = headersBuilder()
