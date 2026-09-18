@@ -80,8 +80,9 @@ class ImageInterceptor(private val clientProvider: () -> OkHttpClient) : Interce
                 if (pieceBitmap != null) {
                     val left = piece.col * manifest.pieceWidth
                     val top = piece.row * manifest.pieceHeight
+                    val srcRect = Rect(0, 0, pieceBitmap.width, pieceBitmap.height)
                     val dstRect = Rect(left, top, left + manifest.pieceWidth, top + manifest.pieceHeight)
-                    canvas.drawBitmap(pieceBitmap, null, dstRect, null)
+                    canvas.drawBitmap(pieceBitmap, srcRect, dstRect, null)
                     pieceBitmap.recycle()
                 }
             }
