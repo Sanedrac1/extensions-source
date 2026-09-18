@@ -169,11 +169,13 @@ abstract class IkigaiMangas :
 
     override fun latestUpdatesParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangaList = document.select("section[aria-labelledby=new-chapters-heading] > ul.grid:last-of-type a.card").map { element ->
+        val mangaList = document.select("section[aria-labelledby=new-chapters-heading] > ul.grid:last-of-type a.card").mapNotNull { element ->
+            val titleEl = element.selectFirst("h3") ?: element.selectFirst(".card-title") ?: element.selectFirst(".card-body .card-title") ?: return@mapNotNull null
+            val href = element.attr("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             SManga.create().apply {
                 thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-                title = element.selectFirst(".card-body .card-title")!!.text()
-                url = element.attr("href").substringAfterLast("/series/").substringBefore("/")
+                title = titleEl.text().trim()
+                url = href.substringAfterLast("/series/").substringBefore("/")
             }
         }
         val hasNextPage = document.selectFirst("nav[aria-label=pagination] > a:last-child:not([class*=btn-disabled])") != null
@@ -360,7 +362,7 @@ abstract class IkigaiMangas :
         date_upload = dateFormat.tryParse(dateString)
     }
 
-    private val pageRegex = """https?://[^\s"'\\<>]+/series/\d+/\d+/[^\s"'\\<>]+\.(?:webp|jpg|jpeg|png)""".toRegex(RegexOption.IGNORE_CASE)
+    private val pageRegex = """https?://[^\s"'\\<>]+/series/\d+/\d+/[^"'\\<>\r\n]+?\.(?:webp|jpg|jpeg|png)(?:\?[^"'\\<>\s]*)?""".toRegex(RegexOption.IGNORE_CASE)
 
     override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
 
@@ -375,7 +377,7 @@ abstract class IkigaiMangas :
 
         if (imgMatches.isNotEmpty()) {
             return imgMatches.mapIndexed { i, url ->
-                Page(i, imageUrl = url)
+                Page(i, imageUrl = url.replace(" ", "%20"))
             }
         }
 
@@ -386,9 +388,15 @@ abstract class IkigaiMangas :
                 .build()
             document = client.newCall(newRequest).execute().asJsoup()
         }
-        return document.select("section div.img > img, div.reader img").mapIndexed { i, element ->
-            Page(i, imageUrl = element.attr("abs:src"))
-        }
+        return document.select("section div > img, div.w-full > img, div.reader img, img[src*=/series/]")
+            .mapNotNull {
+                val src = it.attr("abs:src").ifEmpty { it.attr("abs:data-src") }
+                src.takeIf { s -> s.isNotEmpty() && s.contains("/series/") }
+            }
+            .distinct()
+            .mapIndexed { i, url ->
+                Page(i, imageUrl = url.replace(" ", "%20"))
+            }
     }
 
     override fun imageRequest(page: Page): Request {
@@ -399,7 +407,8 @@ abstract class IkigaiMangas :
             .set("Sec-Fetch-Mode", "no-cors")
             .set("Sec-Fetch-Site", "cross-site")
             .build()
-        return GET(page.imageUrl!!, imageHeaders)
+        val url = page.imageUrl!!.replace(" ", "%20")
+        return GET(url, imageHeaders)
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
