@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.extension.es.orckumangas
 
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -11,7 +12,10 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.annotation.Source
 import keiyoushi.network.rateLimit
 import keiyoushi.utils.asJsoup
+import okhttp3.Cookie
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import java.util.Calendar
@@ -24,11 +28,40 @@ abstract class OrckuMangas : HttpSource() {
 
     override val client = network.client.newBuilder()
         .rateLimit(3, 1.seconds)
+        .addInterceptor(::ageGateInterceptor)
         .build()
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
         .add("Cookie", "orcku_mayor_edad=1")
+
+    private fun ageGateInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val url = baseUrl.toHttpUrl()
+        val cookie = Cookie.Builder()
+            .name("orcku_mayor_edad")
+            .value("1")
+            .domain(url.host)
+            .path("/")
+            .build()
+        client.cookieJar.saveFromResponse(url, listOf(cookie))
+
+        val response = chain.proceed(request)
+        if (response.header("Content-Type")?.contains("text/html") == true) {
+            val bodyPeek = response.peekBody(4096).string()
+            if (bodyPeek.contains("confirmar_edad.php")) {
+                val retPath = request.url.encodedPath + (request.url.encodedQuery?.let { "?$it" } ?: "")
+                val formBody = FormBody.Builder()
+                    .add("confirmar", "1")
+                    .add("ret", retPath)
+                    .build()
+                val confirmRequest = POST("$baseUrl/confirmar_edad.php", headers, formBody)
+                client.newCall(confirmRequest).execute().close()
+                return chain.proceed(request)
+            }
+        }
+        return response
+    }
 
     // ============================== Popular ==============================
     override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/biblioteca?sort=vistas&page=$page", headers)
@@ -83,6 +116,8 @@ abstract class OrckuMangas : HttpSource() {
 
                 val rawImg = imgElement?.attr("abs:src")
                     ?.takeIf { it.isNotBlank() && !it.contains("default-cover") }
+                    ?: imgElement?.attr("abs:data-src")
+                        ?.takeIf { it.isNotBlank() && !it.contains("default-cover") }
                     ?: bgUrl.takeIf { it.isNotBlank() }
 
                 thumbnail_url = when {
@@ -107,10 +142,12 @@ abstract class OrckuMangas : HttpSource() {
             title = document.selectFirst("h1")?.text()?.trim() ?: ""
 
             val coverImg = document.selectFirst("img[src*='uploads/covers/']")?.attr("abs:src")
+                ?: document.selectFirst("img[src*='nsfw_cover.php']")?.attr("abs:src")
                 ?: document.selectFirst("img[src*='uploads/']")?.attr("abs:src")
+                ?: document.selectFirst("div[class*='aspect'] img, div.card img")?.attr("abs:src")
             thumbnail_url = coverImg
 
-            description = document.selectFirst("p.text-gray-300, div.card p")?.text()?.trim()
+            description = document.selectFirst("p.text-gray-300, div.card p, p.text-gray-400")?.text()?.trim()
 
             author = document.selectFirst("div:has(> span:contains(Autor:))")?.ownText()?.trim()
                 ?.ifBlank { null }
