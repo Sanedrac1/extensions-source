@@ -83,4 +83,3 @@ class StatusFilter :
             Pair("Canceled", "Canceled"),
         ),
     )
-

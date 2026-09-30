@@ -236,7 +236,6 @@ abstract class FalcoScan : KeiSource() {
         else -> SManga.UNKNOWN
     }
 
-
     @Serializable
     class ManifestDto(
         val w: Int,
