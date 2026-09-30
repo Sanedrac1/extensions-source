@@ -77,8 +77,10 @@ class StatusFilter :
     UriPartFilter(
         "Status",
         arrayOf(
+            Pair("<Seleccionar>", ""),
             Pair("Completed", "Completed"),
             Pair("En Libertad", "En Libertad"),
             Pair("Canceled", "Canceled"),
         ),
     )
+
