@@ -1,0 +1,23 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
+plugins {
+    alias(kei.plugins.extension)
+}
+
+keiyoushi {
+    name = "Kotori Translations"
+    versionCode = 1
+    contentWarning = ContentWarning.NSFW
+    libVersion = "1.6"
+
+    source {
+        baseUrl = "https://kotoritranslations.online"
+        lang = "es"
+    }
+
+    deeplink {
+        host("kotoritranslations.online")
+        path("/serie/.*")
+        path("/lector/.*")
+    }
+}
