@@ -6,13 +6,17 @@ plugins {
 
 keiyoushi {
     name = "OrckuMangas"
-    versionCode = 6
+    versionCode = 7
     contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    libVersion = "1.6"
 
     source {
         name = "Orcku Mangas"
         lang = "es"
         baseUrl = "https://orckumangas.com"
+    }
+
+    deeplink {
+        path("/ficha")
     }
 }
