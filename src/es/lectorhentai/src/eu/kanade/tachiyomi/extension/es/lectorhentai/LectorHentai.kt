@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.es.lectorhentai
 
+import android.util.Base64
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -16,6 +17,9 @@ import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 @Source
 abstract class LectorHentai : KeiSource() {
@@ -164,27 +168,111 @@ abstract class LectorHentai : KeiSource() {
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         val document = client.get(getChapterUrl(chapter)).asJsoup()
-        val script = document.select("script:containsData(ts_reader.run)").firstOrNull()?.data()
-            ?: throw Exception("No se encontró el script ts_reader")
+        val html = document.html()
 
-        val match = JSON_IMAGE_LIST_REGEX.find(script)
-            ?: throw Exception("No se pudo extraer la lista de imágenes")
+        // 1. Try Dean Edwards unpack on any packed script or full HTML
+        val unpacked = unpackDeanEdwards(html)
 
-        val urls = IMAGE_URL_REGEX.findAll(match.groupValues[1])
-            .map { it.groupValues[1] }
-            .toList()
+        // 2. Try ReaderBlob AES-GCM decryption
+        val k = BLOB_K_REGEX.find(unpacked)?.groupValues?.get(1)
+        val iv = BLOB_IV_REGEX.find(unpacked)?.groupValues?.get(1)
+        val c = BLOB_C_REGEX.find(unpacked)?.groupValues?.get(1)
 
-        if (urls.isEmpty()) {
-            throw Exception("No se encontraron páginas en el capítulo")
+        if (k != null && iv != null && c != null) {
+            val decrypted = runCatching { decryptBlob(k, iv, c) }.getOrNull()
+            if (decrypted != null) {
+                val urls = IMAGE_URL_REGEX.findAll(decrypted)
+                    .map { it.groupValues[1] }
+                    .filter { it.startsWith("http") && !it.endsWith(".svg") }
+                    .toList()
+                if (urls.isNotEmpty()) {
+                    return urls.mapIndexed { index, rawUrl ->
+                        val imageUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
+                        Page(index, imageUrl = imageUrl)
+                    }
+                }
+            }
         }
 
-        return urls.mapIndexed { index, rawUrl ->
-            val imageUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
-            Page(index, imageUrl = imageUrl)
+        // 3. Fallback to ts_reader.run
+        val tsMatch = JSON_IMAGE_LIST_REGEX.find(unpacked) ?: JSON_IMAGE_LIST_REGEX.find(html)
+        if (tsMatch != null) {
+            val urls = IMAGE_URL_REGEX.findAll(tsMatch.groupValues[1])
+                .map { it.groupValues[1] }
+                .filter { it.startsWith("http") && !it.endsWith(".svg") }
+                .toList()
+            if (urls.isNotEmpty()) {
+                return urls.mapIndexed { index, rawUrl ->
+                    val imageUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
+                    Page(index, imageUrl = imageUrl)
+                }
+            }
+        }
+
+        // 4. Fallback to div#readerarea img
+        val imgElements = document.select("div#readerarea img, div.entry-content img")
+        val imgUrls = imgElements.mapNotNull { img ->
+            val src = img.attr("src").ifEmpty { img.attr("data-src") }
+            src.takeIf { it.isNotBlank() && !it.endsWith(".svg") }
+        }
+        if (imgUrls.isNotEmpty()) {
+            return imgUrls.mapIndexed { index, rawUrl ->
+                val imageUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
+                Page(index, imageUrl = imageUrl)
+            }
+        }
+
+        throw Exception("No se encontraron páginas en el capítulo")
+    }
+
+    private fun unpackDeanEdwards(script: String): String {
+        val match = PACKED_REGEX.find(script) ?: return script
+        val p = match.groupValues[1]
+        val a = match.groupValues[2].toIntOrNull() ?: return script
+        val c = match.groupValues[3].toIntOrNull() ?: return script
+        val k = match.groupValues[4].split("|")
+
+        val kMap = HashMap<String, String>(c)
+        for (i in 0 until c) {
+            val key = getBaseStr(i, a)
+            val value = k.getOrNull(i)?.takeIf { it.isNotEmpty() } ?: key
+            kMap[key] = value
+        }
+
+        return WORD_REGEX.replace(p) { m ->
+            kMap[m.value] ?: m.value
         }
     }
 
+    private fun getBaseStr(c: Int, a: Int): String {
+        val prefix = if (c < a) "" else getBaseStr(c / a, a)
+        val rem = c % a
+        val char = if (rem > 35) (rem + 29).toChar() else rem.toString(36)[0]
+        return prefix + char
+    }
+
+    private fun decryptBlob(keyBase64: String, ivBase64: String, cipherBase64: String): String {
+        val keyBytes = Base64.decode(keyBase64, Base64.DEFAULT)
+        val ivBytes = Base64.decode(ivBase64, Base64.DEFAULT)
+        val cipherBytes = Base64.decode(cipherBase64, Base64.DEFAULT)
+
+        val keySpec = SecretKeySpec(keyBytes, "AES")
+        val gcmSpec = GCMParameterSpec(128, ivBytes)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+        }
+
+        val decryptedBytes = cipher.doFinal(cipherBytes)
+        return String(decryptedBytes, Charsets.UTF_8)
+    }
+
     companion object {
+        private val PACKED_REGEX = """eval\(function\(p,a,c,k,e,d\).*?return p\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)""".toRegex(RegexOption.DOT_MATCHES_ALL)
+        private val WORD_REGEX = """\b\w+\b""".toRegex()
+        private val BLOB_K_REGEX = """"k"\s*:\s*"([^"]+)"""".toRegex()
+        private val BLOB_IV_REGEX = """"iv"\s*:\s*"([^"]+)"""".toRegex()
+        private val BLOB_C_REGEX = """"c"\s*:\s*"([^"]+)"""".toRegex()
         private val JSON_IMAGE_LIST_REGEX = """"images"\s*:\s*\[([^\]]+)\]""".toRegex()
         private val IMAGE_URL_REGEX = """"([^"]+)"""".toRegex()
     }
