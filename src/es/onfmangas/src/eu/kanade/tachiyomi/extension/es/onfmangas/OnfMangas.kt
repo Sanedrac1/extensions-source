@@ -71,7 +71,7 @@ abstract class OnfMangas : HttpSource() {
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
         .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         .set("Accept-Language", "en-US,en;q=0.9")
-        .set("Sec-Fetch-Site", "none")
+        .set("Referer", "$baseUrl/")
 
     private val dateFormat by lazy {
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).apply {
@@ -226,9 +226,16 @@ abstract class OnfMangas : HttpSource() {
         return pagesData.mapIndexed { index, dto -> dto.toPage(index) }
     }
 
+    override fun imageRequest(page: Page): Request {
+        val imageHeaders = headersBuilder()
+            .set("Referer", "$baseUrl/")
+            .build()
+        return GET(page.imageUrl!!, imageHeaders)
+    }
+
     // Decent chance for primary src to fail
     override fun fetchImageUrl(page: Page): Observable<String> {
-        val src = page.url
+        val src = page.url.substringBefore("#")
         val fallback = page.url.toHttpUrl().fragment?.removePrefix("fallback=")
 
         if (fallback.isNullOrBlank()) return Observable.just(src)
