@@ -44,7 +44,7 @@ class PageDto(
 ) {
     fun toPage(index: Int) = Page(
         index = index,
-        url = if (!fallback.isNullOrBlank()) "$src#fallback=$fallback" else src,
-        imageUrl = if (fallback.isNullOrBlank()) src else null,
+        url = src.ifEmpty { fallback.orEmpty() },
+        imageUrl = src.ifEmpty { fallback.orEmpty() },
     )
 }
