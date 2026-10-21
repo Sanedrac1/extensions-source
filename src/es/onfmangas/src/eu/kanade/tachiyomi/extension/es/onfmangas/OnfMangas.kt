@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.extension.es.onfmangas
 
 import app.cash.quickjs.QuickJs
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -21,6 +22,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.time.ZoneOffset
@@ -31,6 +33,27 @@ import java.util.Locale
 abstract class OnfMangas : KeiSource() {
 
     override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addInterceptor(::onfTokenInterceptor)
+        .addInterceptor(::imageFallbackInterceptor)
+
+    private fun imageFallbackInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val response = chain.proceed(request)
+        if (response.isSuccessful) return response
+
+        val fallbackUrl = request.header("X-Fallback-Url") ?: return response
+        response.close()
+
+        val fallbackBuilder = request.newBuilder()
+            .url(fallbackUrl)
+            .removeHeader("X-Fallback-Url")
+
+        if (fallbackUrl.contains("mangadex")) {
+            fallbackBuilder.removeHeader("Referer")
+            fallbackBuilder.addHeader("Referer", "https://mangadex.org/")
+        }
+
+        return chain.proceed(fallbackBuilder.build())
+    }
 
     private fun onfTokenInterceptor(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -229,6 +252,28 @@ abstract class OnfMangas : KeiSource() {
         val pagesData = jsonString.parseAs<List<PageDto>>()
 
         return pagesData.mapIndexed { index, dto -> dto.toPage(index) }
+    }
+
+    override fun imageRequest(page: Page): Request {
+        val rawUrl = page.imageUrl!!
+        val src = rawUrl.substringBefore("#")
+        val fallback = rawUrl.substringAfter("#fallback=", "")
+
+        val builder = headers.newBuilder()
+            .removeAll("Origin")
+
+        if (src.contains("mangadex")) {
+            builder.removeAll("Referer")
+            builder.set("Referer", "https://mangadex.org/")
+        } else {
+            builder.set("Referer", "$baseUrl/")
+        }
+
+        if (fallback.isNotEmpty()) {
+            builder.set("X-Fallback-Url", fallback)
+        }
+
+        return GET(src, builder.build())
     }
 
     // ============================= Utilities ==============================
