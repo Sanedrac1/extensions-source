@@ -1,9 +1,6 @@
 package eu.kanade.tachiyomi.multisrc.catharsis
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
 
 // Tile boundaries, with the order the reader shuffled the columns and rows into
 class TilePlan(val cols: IntArray, val rows: IntArray, val colOrder: IntArray, val rowOrder: IntArray)
@@ -18,24 +15,23 @@ fun descramble(bitmap: Bitmap, gutter: Int = 0, plan: (width: Int, height: Int) 
     val srcCols = offsets(tiles.cols, tiles.colOrder)
     val srcRows = offsets(tiles.rows, tiles.rowOrder)
 
+    // Copy pixels directly instead of Canvas/Paint.isFilterBitmap (which throws Stub! on Suwayomi)
     val output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(output)
-    val paint = Paint().apply { isFilterBitmap = false }
+    var tilePixels = IntArray(0)
     for (row in 0 until GRID) {
         for (col in 0 until GRID) {
             val width = tiles.cols[col + 1] - tiles.cols[col]
             val height = tiles.rows[row + 1] - tiles.rows[row]
+            if (width <= 0 || height <= 0) continue
+            val count = width * height
+            if (tilePixels.size < count) tilePixels = IntArray(count)
             val colPosition = tiles.colOrder.indexOf(col)
             val rowPosition = tiles.rowOrder.indexOf(row)
             // Each shuffled strip has a gutter on both sides
             val srcX = srcCols[colPosition] + tileGutter * (2 * colPosition + 1)
             val srcY = srcRows[rowPosition] + tileGutter * (2 * rowPosition + 1)
-            canvas.drawBitmap(
-                bitmap,
-                Rect(srcX, srcY, srcX + width, srcY + height),
-                Rect(tiles.cols[col], tiles.rows[row], tiles.cols[col] + width, tiles.rows[row] + height),
-                paint,
-            )
+            bitmap.getPixels(tilePixels, 0, width, srcX, srcY, width, height)
+            output.setPixels(tilePixels, 0, width, tiles.cols[col], tiles.rows[row], width, height)
         }
     }
     return output
