@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
 import keiyoushi.network.get
 import keiyoushi.network.rateLimit
 import keiyoushi.source.KeiSource
@@ -37,7 +38,7 @@ abstract class KotoriTranslations : KeiSource() {
     }
 
     override suspend fun getPopularManga(page: Int): MangasPage {
-        val series = client.get("$baseUrl/api/series").parseAs<List<SeriesDto>>()
+        val series = client.get("$baseUrl/api/series", Fetch.XHR).parseAs<List<SeriesDto>>()
             .filter { it.publicado }
             .sortedByDescending { it.vistas }
             .map { it.toSManga() }
@@ -45,7 +46,7 @@ abstract class KotoriTranslations : KeiSource() {
     }
 
     override suspend fun getLatestUpdates(page: Int): MangasPage {
-        val series = client.get("$baseUrl/api/series").parseAs<List<SeriesDto>>()
+        val series = client.get("$baseUrl/api/series", Fetch.XHR).parseAs<List<SeriesDto>>()
             .filter { it.publicado }
             .sortedByDescending { parseDate(it.fechaCreacion) }
             .map { it.toSManga() }
@@ -53,7 +54,7 @@ abstract class KotoriTranslations : KeiSource() {
     }
 
     override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
-        var list = client.get("$baseUrl/api/series").parseAs<List<SeriesDto>>()
+        var list = client.get("$baseUrl/api/series", Fetch.XHR).parseAs<List<SeriesDto>>()
             .filter { it.publicado }
 
         if (query.isNotBlank()) {
@@ -113,7 +114,7 @@ abstract class KotoriTranslations : KeiSource() {
         fetchChapters: Boolean,
     ): SMangaUpdate {
         val id = manga.url.substringAfterLast("/")
-        val detail = client.get("$baseUrl/api/series/$id/detalle").parseAs<SerieDetailDto>()
+        val detail = client.get("$baseUrl/api/series/$id/detalle", Fetch.XHR).parseAs<SerieDetailDto>()
         val serie = detail.serie
 
         val details = if (fetchDetails) {
@@ -159,7 +160,7 @@ abstract class KotoriTranslations : KeiSource() {
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         val id = chapter.url.substringAfterLast("/")
-        val detail = client.get("$baseUrl/api/capitulos/$id/detalle").parseAs<CapituloDetailDto>()
+        val detail = client.get("$baseUrl/api/capitulos/$id/detalle", Fetch.XHR).parseAs<CapituloDetailDto>()
         val token = URLEncoder.encode(detail.tokenLector, "UTF-8")
         return detail.paginas.map { pagina ->
             Page(

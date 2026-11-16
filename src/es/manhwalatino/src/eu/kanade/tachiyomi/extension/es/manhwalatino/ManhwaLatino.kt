@@ -6,6 +6,7 @@ import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
 import keiyoushi.network.get
 import keiyoushi.network.rateLimit
 import keiyoushi.utils.asJsoup
@@ -90,7 +91,7 @@ abstract class ManhwaLatino : MadaraNoAjax() {
     private suspend fun fetchSearchDocument(slug: String, page: Int): Document? {
         val pageSegment = if (page > 1) "page/$page/" else ""
         val url = "$baseUrl/search/$mbkToken/$slug/$pageSegment".toHttpUrl()
-        val response = client.get(url, ensureSuccess = false)
+        val response = client.get(url, Fetch.DOCUMENT, ensureSuccess = false)
         if (!response.isSuccessful) {
             val code = response.code
             response.close()
@@ -101,7 +102,7 @@ abstract class ManhwaLatino : MadaraNoAjax() {
     }
 
     private suspend fun updateMbkToken(): Boolean = runCatching {
-        val homeDoc = client.get(baseUrl).asJsoup()
+        val homeDoc = client.get(baseUrl, Fetch.DOCUMENT).asJsoup()
         extractMbkToken(homeDoc)
     }.getOrDefault(false)
 

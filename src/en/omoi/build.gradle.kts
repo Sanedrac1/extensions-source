@@ -9,7 +9,7 @@ keiyoushi {
     pkgName = "en.azuki"
     versionCode = 2
     contentWarning = ContentWarning.MIXED
-    libVersion = "1.4"
+    libVersion = "1.6"
 
     source {
         lang = "en"

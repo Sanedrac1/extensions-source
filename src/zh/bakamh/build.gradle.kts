@@ -6,10 +6,10 @@ plugins {
 
 keiyoushi {
     name = "Baka Manhua"
-    versionCode = 10
+    versionCode = 14
     contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
-    theme = "madaralegacy"
+    libVersion = "1.6"
+    theme = "madara"
 
     source {
         name = "巴卡漫画"
@@ -18,9 +18,4 @@ keiyoushi {
             custom("https://bakamh.com")
         }
     }
-}
-
-dependencies {
-
-    implementation(project(":lib:randomua"))
 }

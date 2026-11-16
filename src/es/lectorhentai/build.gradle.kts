@@ -6,7 +6,7 @@ plugins {
 
 keiyoushi {
     name = "Lector Hentai"
-    versionCode = 2
+    versionCode = 3
     contentWarning = ContentWarning.NSFW
     libVersion = "1.6"
 
@@ -17,7 +17,7 @@ keiyoushi {
 
     deeplink {
         host("lectorhentai.com")
-        path("/manga/.*")
-        path("/read/.*")
+        path("/manga/..*")
+        path("/read/..*")
     }
 }

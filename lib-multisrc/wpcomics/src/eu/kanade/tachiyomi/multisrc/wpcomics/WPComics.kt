@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.lib.i18n.Intl
+import keiyoushi.network.Fetch
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
@@ -17,7 +18,6 @@ import keiyoushi.utils.tryParseDate
 import keiyoushi.utils.tryParseDateTime
 import keiyoushi.utils.tryParseZonedDateTime
 import kotlinx.serialization.json.JsonElement
-import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Response
 import org.jsoup.nodes.Document
@@ -35,9 +35,6 @@ abstract class WPComics : KeiSource() {
     protected open val gmtOffset: String? = "+0500"
 
     protected open val dateZone: ZoneId = ZoneId.systemDefault()
-
-    override fun Headers.Builder.configureHeaders(): Headers.Builder = this
-        .removeAll("Origin")
 
     open val intl = Intl(
         language = lang,
@@ -63,7 +60,7 @@ abstract class WPComics : KeiSource() {
 
     override suspend fun getPopularManga(page: Int): MangasPage {
         val url = "$baseUrl/$popularPath" + if (page > 1) "?page=$page" else ""
-        return parseMangaPage(client.get(url), popularMangaSelector(), ::popularMangaFromElement)
+        return parseMangaPage(client.get(url, Fetch.DOCUMENT), popularMangaSelector(), ::popularMangaFromElement)
     }
 
     protected open fun popularMangaSelector() = "div.items div.item"
@@ -82,7 +79,7 @@ abstract class WPComics : KeiSource() {
 
     override suspend fun getLatestUpdates(page: Int): MangasPage {
         val url = baseUrl + if (page > 1) "?page=$page" else ""
-        return parseMangaPage(client.get(url), latestUpdatesSelector(), ::latestUpdatesFromElement)
+        return parseMangaPage(client.get(url, Fetch.DOCUMENT), latestUpdatesSelector(), ::latestUpdatesFromElement)
     }
 
     protected open fun latestUpdatesSelector() = popularMangaSelector()
@@ -108,7 +105,7 @@ abstract class WPComics : KeiSource() {
             addQueryParameter("sort", "0")
         }.build()
 
-        return parseMangaPage(client.get(url), searchMangaSelector(), ::searchMangaFromElement)
+        return parseMangaPage(client.get(url, Fetch.DOCUMENT), searchMangaSelector(), ::searchMangaFromElement)
     }
 
     protected open fun searchMangaSelector() = "div.items div.item"
@@ -128,7 +125,7 @@ abstract class WPComics : KeiSource() {
         chapters: List<SChapter>,
         fetchDetails: Boolean,
         fetchChapters: Boolean,
-    ): SMangaUpdate = mangaUpdateParse(client.get(getMangaUrl(manga)), manga, chapters)
+    ): SMangaUpdate = mangaUpdateParse(client.get(getMangaUrl(manga), Fetch.DOCUMENT), manga, chapters)
 
     protected open suspend fun mangaUpdateParse(response: Response, manga: SManga, chapters: List<SChapter>): SMangaUpdate {
         val document = response.asJsoup()
@@ -207,11 +204,18 @@ abstract class WPComics : KeiSource() {
             } else {
                 (if (gmtOffset == null) this.substringAfterLast(" ") else "$this $gmtOffset").let {
                     // timestamp has year
-                    if (Regex("""\d+/\d+/\d\d""").find(it)?.value != null) {
+                    if (Regex("""\d+[-/.]\d+[-/.]\d\d""").containsMatchIn(it)) {
                         parseDate(it)
                     } else {
                         // MangaSum - timestamp sometimes doesn't have year (current year implied)
-                        parseDate("$it/${LocalDateTime.now().year % 100}")
+                        val delimiter = if (it.contains("-")) {
+                            "-"
+                        } else if (it.contains(".")) {
+                            "."
+                        } else {
+                            "/"
+                        }
+                        parseDate("$it$delimiter${LocalDateTime.now().year % 100}")
                     }
                 }
             }
@@ -249,7 +253,7 @@ abstract class WPComics : KeiSource() {
 
     open val pageListSelector = "div.page-chapter > img, li.blocks-gallery-item img"
 
-    override suspend fun getPageList(chapter: SChapter): List<Page> = parsePageList(client.get(getChapterUrl(chapter)))
+    override suspend fun getPageList(chapter: SChapter): List<Page> = parsePageList(client.get(getChapterUrl(chapter), Fetch.DOCUMENT))
 
     protected open suspend fun parsePageList(response: Response): List<Page> {
         val document = response.asJsoup()
@@ -272,7 +276,7 @@ abstract class WPComics : KeiSource() {
 
     override val supportsFilterFetching = true
 
-    override suspend fun fetchFilterData(): JsonElement = client.get("$baseUrl/$searchPath").asJsoup().let { document ->
+    override suspend fun fetchFilterData(): JsonElement = client.get("$baseUrl/$searchPath", Fetch.DOCUMENT).asJsoup().let { document ->
         parseGenres(document).toJsonElement()
     }
 

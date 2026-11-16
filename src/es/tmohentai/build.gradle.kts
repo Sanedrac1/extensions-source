@@ -6,9 +6,9 @@ plugins {
 
 keiyoushi {
     name = "TMOHentai"
-    versionCode = 11
+    versionCode = 12
     contentWarning = ContentWarning.NSFW
-    libVersion = "1.4"
+    libVersion = "1.6"
 
     source {
         lang = "es"
@@ -17,8 +17,9 @@ keiyoushi {
 
     deeplink {
         host("tmohentai.app")
+        host("www.tmohentai.app")
         host("tmohentai.com")
-        path("/contents/.*")
-        path("/library/manga/.*")
+        path("/contents/..*")
+        path("/library/..*")
     }
 }

@@ -52,6 +52,7 @@ private val status = listOf(
     "Ongoing" to "Ongoing",
     "Completed" to "Completed",
     "Hiatus" to "Hiatus",
+    "Cancelled" to "Cancelled",
 )
 
 class VolumesFilter :
@@ -131,6 +132,7 @@ private val types = listOf(
     "Manga" to "JP",
     "Manhwa" to "KR",
     "Manhua" to "CN",
+    "OEL" to "EN",
     "One Shot" to "ONESHOT",
 )
 

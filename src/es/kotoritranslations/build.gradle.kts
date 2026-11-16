@@ -6,7 +6,7 @@ plugins {
 
 keiyoushi {
     name = "Kotori Translations"
-    versionCode = 1
+    versionCode = 2
     contentWarning = ContentWarning.NSFW
     libVersion = "1.6"
 
@@ -17,7 +17,7 @@ keiyoushi {
 
     deeplink {
         host("kotoritranslations.online")
-        path("/serie/.*")
-        path("/lector/.*")
+        path("/serie/..*")
+        path("/lector/..*")
     }
 }

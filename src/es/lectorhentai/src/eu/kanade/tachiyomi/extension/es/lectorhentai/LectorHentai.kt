@@ -9,6 +9,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
 import keiyoushi.network.get
 import keiyoushi.network.rateLimit
 import keiyoushi.source.KeiSource
@@ -58,7 +59,7 @@ abstract class LectorHentai : KeiSource() {
             }
         }
 
-        val document = client.get(urlBuilder.build()).asJsoup()
+        val document = client.get(urlBuilder.build(), Fetch.DOCUMENT).asJsoup()
         val mangas = document.select("div.listupd div.bsx").mapNotNull { element ->
             val link = element.selectFirst("a[href]") ?: return@mapNotNull null
             val rawHref = link.attr("href")
@@ -103,7 +104,7 @@ abstract class LectorHentai : KeiSource() {
         fetchDetails: Boolean,
         fetchChapters: Boolean,
     ): SMangaUpdate {
-        val document = client.get(getMangaUrl(manga)).asJsoup()
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
 
         val details = if (fetchDetails) {
             SManga.create().apply {
@@ -167,7 +168,7 @@ abstract class LectorHentai : KeiSource() {
     }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        val document = client.get(getChapterUrl(chapter)).asJsoup()
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
         val html = document.html()
 
         // 1. Try Dean Edwards unpack on any packed script or full HTML
