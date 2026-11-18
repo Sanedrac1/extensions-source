@@ -2,27 +2,48 @@ package eu.kanade.tachiyomi.extension.es.aedex
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import eu.kanade.tachiyomi.multisrc.catharsis.TilePlan
 import eu.kanade.tachiyomi.multisrc.catharsis.descramble
 import keiyoushi.utils.xor
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.asResponseBody
 import okio.Buffer
 import java.io.IOException
 import kotlin.math.roundToInt
 
-// Free-mode pages: XOR-masked, and shuffled over an 8x8 grid when the page has a data-k
-class ImageInterceptor : Interceptor {
+// Free-mode pages: XOR-masked, and shuffled over an 8x8 grid when the page has a scramble key
+class ImageInterceptor(
+    private val lectorSessions: LruCache<String, LectorSession>,
+) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val fragment = request.url.fragment
-        if (fragment == null || request.url.pathSegments.getOrNull(3) != "free-pages") return chain.proceed(request)
-        val pageXorKey = fragment.substringBefore(':').toIntOrNull()
-        val scrambleKey = fragment.substringAfter(':')
-        val response = chain.proceed(request)
+        val segments = request.url.pathSegments
+        val isLectorPage = segments.size >= 3 && segments[0] == "lector" && segments[1] == "p"
+        val isFreePage = segments.getOrNull(3) == "free-pages"
+        if (fragment == null || (!isLectorPage && !isFreePage)) return chain.proceed(request)
+
+        val response = if (isLectorPage) {
+            proceedLectorPage(chain, request, segments[2])
+        } else {
+            chain.proceed(request)
+        }
         if (!response.isSuccessful) return response
+
+        val pageXorKey = if (isLectorPage) {
+            response.header("X-Page-Xor")?.toIntOrNull() ?: fragment.toIntOrNull()
+        } else {
+            fragment.substringBefore(':').toIntOrNull()
+        }
+        val scrambleKey = if (isLectorPage) {
+            response.header("X-Page-Key").orEmpty()
+        } else {
+            fragment.substringAfter(':')
+        }
 
         // Plain, the page's XOR_KEY, then 0x43 for older chapters, like the site's reader
         val header = response.body.source().peek().readByteArray(HEADER_SIZE)
@@ -44,6 +65,18 @@ class ImageInterceptor : Interceptor {
         return response.newBuilder()
             .body(buffer.asResponseBody(MEDIA_TYPE, buffer.size))
             .build()
+    }
+
+    private fun proceedLectorPage(chain: Interceptor.Chain, request: Request, handle: String): Response {
+        val readerUrl = request.tag(LectorPageRef::class.java)?.readerUrl
+            ?: request.header("Referer").orEmpty()
+        val session = lectorSessions.get(readerUrl) ?: return chain.proceed(request)
+        val token = session.ensureLiveToken(chain)
+        val response = chain.proceed(session.signPageRequest(request, handle, token))
+        if (response.code != 403) return response
+        response.close()
+        val refreshed = session.ensureLiveToken(chain, forceRefresh = true)
+        return chain.proceed(session.signPageRequest(request, handle, refreshed))
     }
 
     companion object {

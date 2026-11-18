@@ -24,3 +24,22 @@ class FreeReaderAckDto(
     private val challenge: String,
     private val sig: String,
 )
+
+@Serializable
+class LectorConfigDto(
+    val xorByte: Int = 0x43,
+    val t: String = "",
+    val h: String = "",
+    val now: Long = 0L,
+)
+
+@Serializable
+class LiveTokenRequest(
+    private val h: String,
+)
+
+@Serializable
+class LiveTokenResponse(
+    val l: String? = null,
+    val ttl: Long = 0L,
+)
