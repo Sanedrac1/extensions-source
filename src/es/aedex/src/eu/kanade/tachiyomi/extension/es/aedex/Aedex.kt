@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.es.aedex
 
-import android.util.LruCache
 import eu.kanade.tachiyomi.multisrc.catharsis.Catharsis
 import eu.kanade.tachiyomi.multisrc.catharsis.ChapterDto
 import eu.kanade.tachiyomi.multisrc.catharsis.MangaDto
@@ -18,12 +17,12 @@ import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
+import kotlin.time.Clock
 import kotlin.time.Instant
 
 @Source
 abstract class Aedex : Catharsis() {
-
-    private val lectorSessions = LruCache<String, LectorSession>(16)
 
     override val apiUrl get() = "$baseUrl/api/backend"
 
@@ -36,7 +35,7 @@ abstract class Aedex : Catharsis() {
 
     override fun mangaKey(manga: MangaDto) = manga.slug
 
-    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(ImageInterceptor(lectorSessions))
+    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(ImageInterceptor())
 
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/$mangaPath/${chapter.url}"
 
@@ -61,24 +60,38 @@ abstract class Aedex : Catharsis() {
             Fetch.DOCUMENT.from(getChapterUrl(chapter)),
             FormBody.Builder().add("data", ready.redirectData!!).build(),
         ).asJsoup()
-        val lectorSession = LectorSession.fromDocument(reader)
-        if (lectorSession != null) {
-            lectorSessions.put(reader.location(), lectorSession)
-            val handles = reader.select("canvas.manga-page-canvas[data-h]")
-            if (handles.isNotEmpty()) {
-                return handles.mapIndexed { index, canvas ->
-                    val handle = canvas.attr("data-h")
-                    val imageUrl = "${lectorSession.origin}/lector/p/$handle/".toHttpUrl().newBuilder()
-                        .addQueryParameter("q", "hq")
-                        .fragment(lectorSession.xorByte.toString())
-                        .build()
-                        .toString()
-                    Page(index, url = reader.location(), imageUrl = imageUrl)
-                }
+        val canvases = reader.select("canvas.manga-page-canvas")
+        if (canvases.isEmpty()) throw IOException("No se encontraron páginas en el capítulo")
+
+        val handleCanvases = canvases.filter { it.hasAttr("data-h") && it.attr("data-h").isNotBlank() }
+        if (handleCanvases.isNotEmpty()) {
+            val seed = reader.getElementById("bv-vault")?.attr("data-bv-seed")
+                ?.takeIf(String::isNotBlank)
+                ?: throw IOException("Missing reader seed")
+            val lectorJson = reader.select("script:not([src])")
+                .firstNotNullOfOrNull { LECTOR_REGEX.find(it.data())?.groupValues?.get(1) }
+                ?: throw IOException("Missing reader config")
+            val lector = lectorJson.parseAs<LectorConfigDto>()
+            val clockOffset = lector.now - Clock.System.now().toEpochMilliseconds()
+            val readerUrl = reader.location()
+            val readerBase = readerUrl.toHttpUrl().newBuilder().encodedPath("/").query(null).fragment(null).build()
+            val fragment = "${lector.token}:$seed:${lector.sessionHandle}:$clockOffset:${lector.xorByte}"
+
+            return handleCanvases.mapIndexed { index, canvas ->
+                val imageUrl = readerBase.newBuilder()
+                    .addPathSegments("lector/p")
+                    .addPathSegment(canvas.attr("data-h"))
+                    .addPathSegment("") // trailing slash avoids a 308 redirect per page
+                    .addQueryParameter("q", "hq")
+                    .fragment(fragment)
+                    .build()
+                    .toString()
+                Page(index, url = readerUrl, imageUrl = imageUrl)
             }
         }
+
         val xorKey = reader.select("script:not([src])").firstNotNullOfOrNull { XOR_KEY_REGEX.find(it.data()) }?.groupValues?.get(1).orEmpty()
-        return reader.select("canvas.manga-page-canvas").mapIndexed { index, canvas ->
+        return canvases.mapIndexed { index, canvas ->
             // XOR key and scramble key for ImageInterceptor; pages without data-k aren't shuffled
             val imageUrl = canvas.absUrl("data-src").toHttpUrl().newBuilder()
                 .fragment("$xorKey:${canvas.attr("data-k")}")
@@ -89,13 +102,11 @@ abstract class Aedex : Catharsis() {
     }
 
     override fun getImageRequest(page: Page): Request = super.getImageRequest(page).newBuilder()
-        .tag(LectorPageRef::class.java, LectorPageRef(page.url))
         .fetch(Fetch.XHR.from(page.url))
         .build()
 
     companion object {
         private val XOR_KEY_REGEX = Regex("""\bvar XOR_KEY\s*=\s*(\d+)""")
+        private val LECTOR_REGEX = Regex("""window\.__LECTOR__\s*=\s*(\{.*?\});""")
     }
 }
-
-class LectorPageRef(val readerUrl: String)

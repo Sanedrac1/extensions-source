@@ -27,19 +27,19 @@ class FreeReaderAckDto(
 
 @Serializable
 class LectorConfigDto(
+    @SerialName("t") val token: String,
+    @SerialName("h") val sessionHandle: String,
+    val now: Long,
     val xorByte: Int = 0x43,
-    val t: String = "",
-    val h: String = "",
-    val now: Long = 0L,
 )
 
 @Serializable
 class LiveTokenRequest(
-    private val h: String,
+    @SerialName("h") private val sessionHandle: String,
 )
 
 @Serializable
-class LiveTokenResponse(
-    val l: String? = null,
-    val ttl: Long = 0L,
+class LiveTokenDto(
+    @SerialName("l") val token: String,
+    val ttl: Long = 45_000L,
 )
