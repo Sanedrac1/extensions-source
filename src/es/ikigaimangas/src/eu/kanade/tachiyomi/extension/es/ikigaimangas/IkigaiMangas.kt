@@ -40,6 +40,20 @@ import kotlin.time.Duration.Companion.seconds
 @Source
 abstract class IkigaiMangas : KeiSource() {
     override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addCookie("is-adult-enabled" to "true")
+        .addInterceptor { chain ->
+            val request = chain.request()
+            if (request.url.host.endsWith("ikigaimangas.cloud") && request.header("Sec-Fetch-Dest") == null) {
+                chain.proceed(
+                    request.newBuilder()
+                        .header("Sec-Fetch-Dest", "image")
+                        .header("Sec-Fetch-Mode", "no-cors")
+                        .header("Sec-Fetch-Site", "cross-site")
+                        .build(),
+                )
+            } else {
+                chain.proceed(request)
+            }
+        }
         .rateLimit(1, 2.seconds) { it.host == baseUrl.toHttpUrl().host }
 
     private val imageCdnUrl: String = "https://image2.ikigaimangas.cloud"
