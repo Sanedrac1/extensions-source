@@ -13,16 +13,17 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.IOException
 import java.math.BigInteger
-import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-// The site's free reading mode: a countdown over a WebSocket whose challenges are signed with a per-chapter key
+internal class LoginRequiredException : IOException(LOGIN_REQUIRED_MESSAGE)
+
+// Aedex's free reader gates chapters behind a short WebSocket countdown with signed pings
 class FreeReader {
-    private val keyPair: KeyPair = KeyPairGenerator.getInstance("EC")
+    private val keyPair = KeyPairGenerator.getInstance("EC")
         .apply { initialize(ECGenParameterSpec("secp256r1")) }
         .generateKeyPair()
 
@@ -57,7 +58,12 @@ class FreeReader {
                             }
                             "error", "early_access" -> {
                                 webSocket.close(1000, null)
-                                continuation.resumeWithException(IOException(frame.code ?: frame.type))
+                                val exception = if (frame.code == "LOGIN_REQUIRED") {
+                                    LoginRequiredException()
+                                } else {
+                                    IOException(frame.code ?: frame.type)
+                                }
+                                continuation.resumeWithException(exception)
                             }
                         }
                     }

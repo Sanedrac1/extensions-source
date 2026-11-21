@@ -4,9 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import eu.kanade.tachiyomi.multisrc.catharsis.TilePlan
 import eu.kanade.tachiyomi.multisrc.catharsis.descramble
-import keiyoushi.utils.hmacSha256
+import keiyoushi.network.Fetch
+import keiyoushi.network.fetch
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.sha256
 import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.xor
 import okhttp3.Interceptor
@@ -20,110 +20,42 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 import kotlin.time.Clock
 
-// Free-mode pages: XOR-masked, and shuffled over an 8x8 grid when the page has a scramble key
-class ImageInterceptor : Interceptor {
+// Pages of the free reader: signed requests, XOR-masked images, shuffled over an 8x8 grid when the page has a key
+class ImageInterceptor(
+    // A new visit to the reader for a chapter, given the seed of the stale one
+    private val renewSession: (chapterKey: String, staleSeed: String) -> ReaderSession?,
+) : Interceptor {
 
     private val liveTokens = ConcurrentHashMap<String, LiveToken>()
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        val fragment = request.url.fragment ?: return chain.proceed(request)
-        val segments = request.url.pathSegments
-        val isLectorPage = segments.size >= 3 && segments[0] == "lector" && segments[1] == "p"
-        val isFreePage = segments.getOrNull(3) == "free-pages"
+        val fragment = request.url.fragment
+        if (fragment == null || request.url.pathSegments.take(2) != listOf("lector", "p")) return chain.proceed(request)
+        val parts = fragment.split(':', limit = 6)
+        val keys = VisitKeys.parse(parts)
+        val index = parts[4].toInt()
+        val chapterKey = parts[5]
 
-        return when {
-            isLectorPage -> interceptLectorPage(chain, request, segments[2], fragment)
-            isFreePage -> interceptFreePage(chain, request, fragment)
-            else -> chain.proceed(request)
-        }
-    }
-
-    private fun interceptFreePage(chain: Interceptor.Chain, request: Request, fragment: String): Response {
-        val pageXorKey = fragment.substringBefore(':').toIntOrNull()
-        val scrambleKey = fragment.substringAfter(':')
-        val response = chain.proceed(request)
-        if (!response.isSuccessful) return response
-        return processImage(response, pageXorKey, scrambleKey)
-    }
-
-    private fun interceptLectorPage(
-        chain: Interceptor.Chain,
-        request: Request,
-        handle: String,
-        fragment: String,
-    ): Response {
-        val (token, seed, sessionHandle, offsetRaw, xorRaw) = fragment.split(':')
-        val clockOffset = offsetRaw.toLong()
-        val fallbackXor = xorRaw.toInt()
-
-        val key = "$token:$seed".sha256().toHexString()
-        val hmacKey = "$key:p".sha256()
-        val proofHeader = "bv-sig-${key.substring(7, 15)}"
-        val liveHeader = "bv-live-${key.substring(15, 23)}"
-        val buildHeader = "bv-build-${key.substring(23, 31)}"
-        val buildId = key.substring(31, 43)
-        val vivoSlug = key.substring(43, 51)
-
-        fun proofFor(scope: String, subject: String): String {
-            val now = Clock.System.now().toEpochMilliseconds() + clockOffset
-            val sig = "$scope.$subject.$now".hmacSha256(hmacKey).toHexString().take(40)
-            return "$now.$sig"
-        }
-
-        fun fetchLiveToken(): String {
-            val now = Clock.System.now().toEpochMilliseconds()
-            liveTokens[sessionHandle]?.takeIf { now < it.expiresAt }?.let { return it.token }
-            synchronized(liveTokens) {
-                val recheckNow = Clock.System.now().toEpochMilliseconds()
-                liveTokens.entries.removeIf { it.value.expiresAt <= recheckNow }
-                liveTokens[sessionHandle]?.let { return it.token }
-
-                val liveUrl = request.url.newBuilder()
-                    .encodedPath("/lector/$vivoSlug/")
-                    .query(null)
-                    .fragment(null)
-                    .build()
-                val liveReq = request.newBuilder()
-                    .url(liveUrl)
-                    .post(LiveTokenRequest(sessionHandle).toJsonRequestBody())
-                    .header(buildHeader, buildId)
-                    .header(proofHeader, proofFor("v", sessionHandle))
-                    .build()
-                return chain.proceed(liveReq).use { res ->
-                    if (!res.isSuccessful) throw IOException("Failed to fetch reader live token: HTTP ${res.code}")
-                    val data = res.parseAs<LiveTokenDto>()
-                    if (data.token.isBlank()) throw IOException("Empty reader live token")
-                    val expiry = Clock.System.now().toEpochMilliseconds() + maxOf(5_000L, data.ttl - 5_000L)
-                    liveTokens[sessionHandle] = LiveToken(data.token, expiry)
-                    data.token
-                }
-            }
-        }
-
-        val pageUrl = request.url.newBuilder().fragment(null).build()
-        fun buildPageRequest(liveToken: String): Request = request.newBuilder()
-            .url(pageUrl)
-            .header(buildHeader, buildId)
-            .header(proofHeader, proofFor("p", handle))
-            .header(liveHeader, liveToken)
-            .build()
-
-        var response = chain.proceed(buildPageRequest(fetchLiveToken()))
-        if (response.code == 403) {
-            liveTokens.remove(sessionHandle)
-            response.close()
-            response = chain.proceed(buildPageRequest(fetchLiveToken()))
+        val response = try {
+            proceedPage(chain, request, keys)
+        } catch (_: OutdatedVisitException) {
+            // The site forgot the visit this URL came from, so take the page from a new one
+            val session = renewSession(chapterKey, keys.seed)?.takeIf { index < it.pageCount } ?: throw OutdatedVisitException()
+            val renewed = request.newBuilder()
+                .url(session.imageUrl(index, chapterKey))
+                .fetch(Fetch.XHR.from(session.readerUrl))
+                .build()
+            proceedPage(chain, renewed, session.keys)
         }
         if (!response.isSuccessful) return response
 
-        val pageXorKey = response.header("X-Page-Xor")?.toIntOrNull() ?: fallbackXor
+        val pageXorKey = response.header("X-Page-Xor")?.toIntOrNull()
         val scrambleKey = response.header("X-Page-Key").orEmpty()
-        return processImage(response, pageXorKey, scrambleKey)
-    }
+        // The reader spaces the shuffled strips apart by this many px
+        val tileGutter = response.header("X-Tile-Gutter")?.toIntOrNull() ?: 0
 
-    private fun processImage(response: Response, pageXorKey: Int?, scrambleKey: String): Response {
-        // Plain, the page's XOR_KEY, then 0x43 for older chapters, like the site's reader
+        // Plain, the page's XOR key, then 0x43 for older chapters, like the site's reader
         val header = response.body.source().peek().readByteArray(HEADER_SIZE)
         val xorKey = listOfNotNull(0, pageXorKey, LEGACY_XOR_KEY).firstOrNull { isImageHeader(header.xor(it)) }
         if (xorKey == null) {
@@ -134,7 +66,7 @@ class ImageInterceptor : Interceptor {
         if (scrambleKey.isBlank()) return plain
         val image = plain.body.use { BitmapFactory.decodeStream(it.byteStream()) }
             ?: throw IOException("Undecodable page image")
-        val result = descramble(image) { width, height -> tilePlan(mulberry32(scrambleKey.hashCode()), width, height) }
+        val result = descramble(image, tileGutter) { width, height -> tilePlan(mulberry32(scrambleKey.hashCode()), width, height) }
         image.recycle()
 
         val buffer = Buffer()
@@ -145,14 +77,65 @@ class ImageInterceptor : Interceptor {
             .build()
     }
 
+    private fun proceedPage(chain: Interceptor.Chain, request: Request, keys: VisitKeys): Response {
+        val signer = keys.signer
+        val (proofName, proof) = signer.proof("p", request.url.pathSegments[2], keys.now())
+        val response = chain.proceed(
+            request.newBuilder()
+                .url(request.url.newBuilder().fragment(null).build())
+                .header(signer.buildName, signer.buildId)
+                .header(proofName, proof)
+                .header(signer.liveName, liveToken(chain, request, keys))
+                .build(),
+        )
+        if (response.code == 409) {
+            response.close()
+            throw OutdatedVisitException()
+        }
+        return response
+    }
+
+    // The site's heartbeat: pages are only served along a live token, which it hands out for a while
+    private fun liveToken(chain: Interceptor.Chain, request: Request, keys: VisitKeys): String {
+        fun cached() = liveTokens[keys.liveKey]?.takeIf { it.expiresAt > Clock.System.now().toEpochMilliseconds() }?.token
+        cached()?.let { return it }
+        synchronized(liveTokens) {
+            cached()?.let { return it }
+            val signer = keys.signer
+            val (proofName, proof) = signer.proof("v", keys.liveKey, keys.now())
+            val live = chain.proceed(
+                request.newBuilder()
+                    .url(request.url.newBuilder().encodedPath("/lector/${signer.livePath}/").query(null).fragment(null).build())
+                    .post(LiveRequest(keys.liveKey).toJsonRequestBody())
+                    .header(signer.buildName, signer.buildId)
+                    .header(proofName, proof)
+                    .build(),
+            ).use { response ->
+                if (response.code == 409) throw OutdatedVisitException()
+                if (!response.isSuccessful) throw IOException("HTTP error ${response.code}")
+                response.parseAs<LiveTokenDto>()
+            }
+            // Renewed a little before it runs out
+            val expiresAt = Clock.System.now().toEpochMilliseconds() + maxOf(MIN_LIVE_TTL, live.ttl - LIVE_MARGIN)
+            liveTokens[keys.liveKey] = LiveToken(live.token, expiresAt)
+            return live.token
+        }
+    }
+
+    private fun VisitKeys.now() = Clock.System.now().toEpochMilliseconds() + clockOffset
+
+    private class LiveToken(val token: String, val expiresAt: Long)
+
+    private class OutdatedVisitException : IOException("The site's reader changed, open the chapter again")
+
     companion object {
         private const val LEGACY_XOR_KEY = 0x43
         private const val HEADER_SIZE = 12L
+        private const val MIN_LIVE_TTL = 5_000L
+        private const val LIVE_MARGIN = 5_000L
         private val MEDIA_TYPE = "image/jpeg".toMediaType()
     }
 }
-
-private class LiveToken(val token: String, val expiresAt: Long)
 
 // The reader's page shuffle generator
 private fun mulberry32(seed: Int): () -> Double {

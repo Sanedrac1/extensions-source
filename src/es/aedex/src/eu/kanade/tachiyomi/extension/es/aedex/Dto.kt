@@ -4,6 +4,18 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
+class CsrfTokenDto(
+    val csrfToken: String,
+)
+
+@Serializable
+class FreeReaderRequest(
+    private val slug: String,
+    private val chapter: String,
+    private val modo: String,
+)
+
+@Serializable
 class FreeReaderDto(
     @SerialName("ws_url") val wsUrl: String,
     @SerialName("ws_ticket") val wsTicket: String,
@@ -25,21 +37,21 @@ class FreeReaderAckDto(
     private val sig: String,
 )
 
+// The reader page's `window.__BV_CTX__`
 @Serializable
-class LectorConfigDto(
+class LectorDto(
     @SerialName("t") val token: String,
-    @SerialName("h") val sessionHandle: String,
+    @SerialName("h") val liveKey: String,
     val now: Long,
-    val xorByte: Int = 0x43,
 )
 
 @Serializable
-class LiveTokenRequest(
-    @SerialName("h") private val sessionHandle: String,
+class LiveRequest(
+    @SerialName("h") private val liveKey: String,
 )
 
 @Serializable
 class LiveTokenDto(
     @SerialName("l") val token: String,
-    val ttl: Long = 45_000L,
+    val ttl: Long,
 )
