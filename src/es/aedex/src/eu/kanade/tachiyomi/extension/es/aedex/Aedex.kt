@@ -239,9 +239,6 @@ abstract class Aedex :
     }
 
     private fun readerSession(reader: Document): ReaderSession {
-        val seed = reader.select("[hidden]").firstNotNullOfOrNull { el ->
-            el.attributes().firstOrNull { it.key.startsWith("data-") && HEX_32_REGEX.matches(it.value) }?.value
-        } ?: throw IOException("Reader seed not found")
         val lector = reader.select("script").firstNotNullOfOrNull { script ->
             LECTOR_REGEX.findAll(script.data()).firstNotNullOfOrNull { match ->
                 val raw = match.groupValues[1].takeIf { it.isNotEmpty() }
@@ -250,11 +247,20 @@ abstract class Aedex :
                 runCatching { raw.parseAs<LectorDto>() }.getOrNull()
             }
         } ?: throw IOException("Reader keys not found")
-        val handles = reader.select("canvas.manga-page-canvas, canvas[data-page]").mapNotNull { canvas ->
-            canvas.attributes().firstOrNull { attr ->
-                attr.key.startsWith("data-") && attr.key != "data-page" && attr.value.length > 16
-            }?.value
-        }.ifEmpty { throw IOException("Reader pages not found") }
+        val seed = reader.select("meta[content]").firstNotNullOfOrNull { el ->
+            el.attr("content").takeIf { HEX_32_REGEX.matches(it) }
+        } ?: reader.select("[hidden]").firstNotNullOfOrNull { el ->
+            el.attributes().firstOrNull { it.key.startsWith("data-") && HEX_32_REGEX.matches(it.value) }?.value
+        } ?: reader.allElements.firstNotNullOfOrNull { el ->
+            el.attributes().firstOrNull { it.key.startsWith("data-") && it.key != "data-page" && HEX_32_REGEX.matches(it.value) }?.value
+        } ?: lector.seed?.takeIf { HEX_32_REGEX.matches(it) }
+            ?: throw IOException("Reader seed not found")
+        val handles = lector.pages?.takeIf { it.isNotEmpty() }
+            ?: reader.select("canvas.manga-page-canvas, canvas[data-page]").mapNotNull { canvas ->
+                canvas.attributes().firstOrNull { attr ->
+                    attr.key.startsWith("data-") && attr.key != "data-page" && attr.value.length > 16
+                }?.value
+            }.ifEmpty { throw IOException("Reader pages not found") }
         return ReaderSession(
             readerUrl = reader.location(),
             keys = VisitKeys(lector.token, seed, lector.liveKey, lector.now - Clock.System.now().toEpochMilliseconds()),
@@ -287,7 +293,7 @@ abstract class Aedex :
         private const val PASS_COOKIE = "ax_rp"
         private const val MAX_ATTEMPTS = 3
         private val HEX_32_REGEX = Regex("^[0-9a-f]{32}$")
-        private val LECTOR_REGEX = Regex("""window\.__\w+\s*=\s*(?:JSON\.parse\(atob\("([^"]+)"\)\)|(\{[^;]+\}))""")
+        private val LECTOR_REGEX = Regex("""window\.\w+\s*=\s*(?:JSON\.parse\(atob\("([^"]+)"\)\)|(\{[^;]+\}))""")
     }
 }
 
