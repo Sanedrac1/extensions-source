@@ -4,11 +4,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
-class CsrfTokenDto(
-    val csrfToken: String,
-)
-
-@Serializable
 class FreeReaderRequest(
     private val slug: String,
     private val chapter: String,

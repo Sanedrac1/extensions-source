@@ -25,6 +25,7 @@ import keiyoushi.utils.tryParse
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.Cookie
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -61,64 +62,54 @@ abstract class Aedex :
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
-            key = PREF_EMAIL
-            title = "Correo electrónico"
-            summary = "Correo de tu cuenta de Aedex (requerido después del capítulo 3)"
-            dialogTitle = "Correo electrónico"
-            setDefaultValue("")
-        }.also(screen::addPreference)
-
-        EditTextPreference(screen.context).apply {
-            key = PREF_PASSWORD
-            title = "Contraseña"
-            summary = "Contraseña de tu cuenta de Aedex"
-            dialogTitle = "Contraseña"
+            key = PREF_SESSION_COOKIE
+            title = "Cookie de sesión"
+            summary = "Pega el valor de __Secure-next-auth.session-token desde tu navegador en aedexnox.com"
+            dialogTitle = "Cookie de sesión (__Secure-next-auth.session-token)"
             setDefaultValue("")
         }.also(screen::addPreference)
     }
-
-    private val loginLock = Mutex()
 
     @Volatile
-    private var lastLoggedInEmail: String? = null
+    private var lastAppliedCookie: String? = null
 
-    private fun credentials(): Pair<String, String>? {
-        val email = preferences.getString(PREF_EMAIL, "").orEmpty().trim().lowercase()
-        val password = preferences.getString(PREF_PASSWORD, "").orEmpty()
-        return if (email.isNotEmpty() && password.isNotEmpty()) email to password else null
-    }
+    private fun configuredSessionCookie(): String = preferences.getString(PREF_SESSION_COOKIE, "").orEmpty().trim()
 
-    private fun hasSessionCookie(): Boolean = client.cookieJar.loadForRequest("$baseUrl/".toHttpUrl())
-        .any { it.name.contains(SESSION_COOKIE_MARKER) }
-
-    private suspend fun ensureLoggedIn(force: Boolean = false) {
-        val (email, password) = credentials() ?: return
-        loginLock.withLock {
-            if (!force && hasSessionCookie() && lastLoggedInEmail == email) return@withLock
-            val authFetch = Fetch.XHR.from("$baseUrl/auth/login")
-            val csrf = client.get("$baseUrl/api/auth/csrf", authFetch)
-                .parseAs<CsrfTokenDto>()
-                .csrfToken
-            val form = FormBody.Builder()
-                .add("csrfToken", csrf)
-                .add("username", email)
-                .add("password", password)
-                .add("json", "true")
-                .add("redirect", "false")
-                .add("callbackUrl", "$baseUrl/")
-                .build()
-            client.post("$baseUrl/api/auth/callback/credentials", authFetch, form, ensureSuccess = false).use { response ->
-                val bodyText = response.body.string()
-                when {
-                    bodyText.contains("EmailNotVerified") -> throw IOException("Verifica tu correo en aedexnox.com antes de iniciar sesión")
-                    response.code == 401 || bodyText.contains("CredentialsSignin") -> throw IOException("Correo o contraseña incorrectos en Aedex")
-                    !response.isSuccessful -> throw IOException("Error al iniciar sesión en Aedex (HTTP ${response.code})")
-                }
+    private fun applySessionCookie(force: Boolean = false) {
+        val raw = configuredSessionCookie()
+        if (raw.isEmpty()) return
+        if (!force && raw == lastAppliedCookie) return
+        val url = "$baseUrl/".toHttpUrl()
+        val cleaned = raw.removePrefix("Cookie:").removePrefix("cookie:").trim()
+        val cookies = if ('=' in cleaned) {
+            cleaned.split(';').mapNotNull { entry ->
+                val idx = entry.indexOf('=')
+                if (idx <= 0) return@mapNotNull null
+                val name = entry.substring(0, idx).trim()
+                val value = entry.substring(idx + 1).trim()
+                if (name.isEmpty() || value.isEmpty()) return@mapNotNull null
+                Cookie.Builder()
+                    .name(name)
+                    .value(value)
+                    .domain(url.host)
+                    .path("/")
+                    .secure()
+                    .build()
             }
-            if (!hasSessionCookie()) {
-                throw IOException("No se recibió la cookie de sesión al iniciar sesión en Aedex")
-            }
-            lastLoggedInEmail = email
+        } else {
+            listOf(
+                Cookie.Builder()
+                    .name(DEFAULT_SESSION_COOKIE)
+                    .value(cleaned)
+                    .domain(url.host)
+                    .path("/")
+                    .secure()
+                    .build(),
+            )
+        }
+        if (cookies.isNotEmpty()) {
+            client.cookieJar.saveFromResponse(url, cookies)
+            lastAppliedCookie = raw
         }
     }
 
@@ -151,7 +142,7 @@ abstract class Aedex :
     private class OutdatedReaderException : IOException("The site's reader changed, try again")
 
     private suspend fun requestFreeReader(chapter: SChapter, fetch: Fetch, freeReader: FreeReader): FreeReaderDto {
-        ensureLoggedIn()
+        applySessionCookie()
         val slug = chapter.url.substringBeforeLast('/')
         // The site sends the number as parseFloat does
         val number = chapter.url.substringAfterLast('/').let { it.toDoubleOrNull()?.toString()?.removeSuffix(".0") ?: it }
@@ -178,7 +169,7 @@ abstract class Aedex :
                             when {
                                 // The pass is gone, or was given to another IP: solve a new one
                                 response.code == 403 && code == "READER_PASS_REQUIRED" && retry -> renewPass = true
-                                code == "LOGIN_REQUIRED" && retry && credentials() != null -> ensureLoggedIn(force = true)
+                                code == "LOGIN_REQUIRED" && retry && configuredSessionCookie().isNotEmpty() -> applySessionCookie(force = true)
                                 code == "LOGIN_REQUIRED" -> throw LoginRequiredException()
                                 else -> throw response.siteError(code)
                             }
@@ -194,7 +185,7 @@ abstract class Aedex :
                 if (!retry || !e.isCloudflare403()) throw e
                 signer = null
                 renewPass = true
-                if (credentials() != null) ensureLoggedIn(force = true)
+                applySessionCookie(force = true)
             }
         }
         throw IOException("Couldn't open the reader")
@@ -233,8 +224,8 @@ abstract class Aedex :
     private suspend fun openReader(chapter: SChapter): Document = try {
         openReaderOnce(chapter)
     } catch (e: LoginRequiredException) {
-        if (credentials() == null) throw e
-        ensureLoggedIn(force = true)
+        if (configuredSessionCookie().isEmpty()) throw e
+        applySessionCookie(force = true)
         openReaderOnce(chapter)
     }
 
@@ -297,9 +288,8 @@ abstract class Aedex :
         .build()
 
     companion object {
-        private const val PREF_EMAIL = "aedex_email"
-        private const val PREF_PASSWORD = "aedex_password"
-        private const val SESSION_COOKIE_MARKER = "next-auth.session-token"
+        private const val PREF_SESSION_COOKIE = "aedex_session_cookie"
+        private const val DEFAULT_SESSION_COOKIE = "__Secure-next-auth.session-token"
         private const val PASS_COOKIE = "ax_rp"
         private const val MAX_ATTEMPTS = 3
         private val HEX_32_REGEX = Regex("^[0-9a-f]{32}$")
@@ -307,4 +297,4 @@ abstract class Aedex :
     }
 }
 
-internal const val LOGIN_REQUIRED_MESSAGE = "Inicia sesión en los ajustes de la extensión (Correo y Contraseña) o en WebView para leer este capítulo"
+internal const val LOGIN_REQUIRED_MESSAGE = "Configura la Cookie de sesión (__Secure-next-auth.session-token) en los ajustes de Aedex"
