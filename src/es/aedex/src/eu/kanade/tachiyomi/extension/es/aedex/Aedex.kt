@@ -188,10 +188,20 @@ abstract class Aedex :
             } catch (_: OutdatedReaderException) {
                 if (!retry) throw OutdatedReaderException()
                 signer = null
+            } catch (e: IOException) {
+                // Suwayomi's CloudflareInterceptor intercepts HTTP 403 JSON responses (READER_PASS_REQUIRED / LOGIN_REQUIRED)
+                // on aedexnox.com and throws CloudflareBypassException before we can inspect the body.
+                if (!retry || !e.isCloudflare403()) throw e
+                signer = null
+                renewPass = true
+                if (credentials() != null) ensureLoggedIn(force = true)
             }
         }
         throw IOException("Couldn't open the reader")
     }
+
+    private fun Throwable.isCloudflare403(): Boolean = generateSequence(this) { it.cause }
+        .any { it.javaClass.name.contains("CloudflareBypassException") || it.message?.contains("CloudflareBypassException") == true }
 
     private suspend fun loadSigner(chapter: SChapter): ReaderSigner {
         val doc = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
