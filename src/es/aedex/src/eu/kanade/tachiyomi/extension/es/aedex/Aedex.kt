@@ -81,29 +81,39 @@ abstract class Aedex :
         if (!force && raw == lastAppliedCookie) return
         val url = "$baseUrl/".toHttpUrl()
         val cleaned = raw.removePrefix("Cookie:").removePrefix("cookie:").trim()
-        val cookies = if ('=' in cleaned) {
+        val pairs = if ('=' in cleaned) {
             cleaned.split(';').mapNotNull { entry ->
                 val idx = entry.indexOf('=')
                 if (idx <= 0) return@mapNotNull null
                 val name = entry.substring(0, idx).trim()
                 val value = entry.substring(idx + 1).trim()
                 if (name.isEmpty() || value.isEmpty()) return@mapNotNull null
+                name to value
+            }
+        } else {
+            listOf(DEFAULT_SESSION_COOKIE to cleaned)
+        }
+        val expiresAt = Clock.System.now().toEpochMilliseconds() + SESSION_COOKIE_TTL_MS
+        val cookies = pairs.flatMap { (name, value) ->
+            listOf(
+                // Evict any stale domain-scoped duplicate saved by earlier versions
+                Cookie.Builder()
+                    .name(name)
+                    .value("")
+                    .domain(url.host)
+                    .path("/")
+                    .secure()
+                    .expiresAt(1L)
+                    .build(),
+                // Match NextAuth's host-only cookie key so it overwrites any expired session cookie
                 Cookie.Builder()
                     .name(name)
                     .value(value)
-                    .domain(url.host)
+                    .hostOnlyDomain(url.host)
                     .path("/")
                     .secure()
-                    .build()
-            }
-        } else {
-            listOf(
-                Cookie.Builder()
-                    .name(DEFAULT_SESSION_COOKIE)
-                    .value(cleaned)
-                    .domain(url.host)
-                    .path("/")
-                    .secure()
+                    .httpOnly()
+                    .expiresAt(expiresAt)
                     .build(),
             )
         }
@@ -290,6 +300,7 @@ abstract class Aedex :
     companion object {
         private const val PREF_SESSION_COOKIE = "aedex_session_cookie"
         private const val DEFAULT_SESSION_COOKIE = "__Secure-next-auth.session-token"
+        private const val SESSION_COOKIE_TTL_MS = 30L * 24 * 60 * 60 * 1000
         private const val PASS_COOKIE = "ax_rp"
         private const val MAX_ATTEMPTS = 3
         private val HEX_32_REGEX = Regex("^[0-9a-f]{32}$")
