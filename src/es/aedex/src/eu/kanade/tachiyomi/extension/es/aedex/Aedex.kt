@@ -25,11 +25,12 @@ import keiyoushi.utils.tryParse
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.Cookie
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.io.IOException
 import kotlin.time.Clock
@@ -53,7 +54,8 @@ abstract class Aedex :
 
     override fun mangaKey(manga: MangaDto) = manga.slug
 
-    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(ImageInterceptor(::renewSession))
+    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(::sessionCookieInterceptor)
+        .addInterceptor(ImageInterceptor(::renewSession))
 
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/$mangaPath/${chapter.url}"
 
@@ -70,18 +72,12 @@ abstract class Aedex :
         }.also(screen::addPreference)
     }
 
-    @Volatile
-    private var lastAppliedCookie: String? = null
-
     private fun configuredSessionCookie(): String = preferences.getString(PREF_SESSION_COOKIE, "").orEmpty().trim()
 
-    private fun applySessionCookie(force: Boolean = false) {
-        val raw = configuredSessionCookie()
-        if (raw.isEmpty()) return
-        if (!force && raw == lastAppliedCookie) return
-        val url = "$baseUrl/".toHttpUrl()
+    private fun parseCookiePairs(raw: String): List<Pair<String, String>> {
         val cleaned = raw.removePrefix("Cookie:").removePrefix("cookie:").trim()
-        val pairs = if ('=' in cleaned) {
+        if (cleaned.isEmpty()) return emptyList()
+        return if ('=' in cleaned) {
             cleaned.split(';').mapNotNull { entry ->
                 val idx = entry.indexOf('=')
                 if (idx <= 0) return@mapNotNull null
@@ -93,34 +89,28 @@ abstract class Aedex :
         } else {
             listOf(DEFAULT_SESSION_COOKIE to cleaned)
         }
-        val expiresAt = Clock.System.now().toEpochMilliseconds() + SESSION_COOKIE_TTL_MS
-        val cookies = pairs.flatMap { (name, value) ->
-            listOf(
-                // Evict any stale domain-scoped duplicate saved by earlier versions
-                Cookie.Builder()
-                    .name(name)
-                    .value("")
-                    .domain(url.host)
-                    .path("/")
-                    .secure()
-                    .expiresAt(1L)
-                    .build(),
-                // Match NextAuth's host-only cookie key so it overwrites any expired session cookie
-                Cookie.Builder()
-                    .name(name)
-                    .value(value)
-                    .hostOnlyDomain(url.host)
-                    .path("/")
-                    .secure()
-                    .httpOnly()
-                    .expiresAt(expiresAt)
-                    .build(),
-            )
+    }
+
+    private fun sessionCookieInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val raw = configuredSessionCookie()
+        if (raw.isEmpty() || request.url.host != baseUrl.toHttpUrl().host) {
+            return chain.proceed(request)
         }
-        if (cookies.isNotEmpty()) {
-            client.cookieJar.saveFromResponse(url, cookies)
-            lastAppliedCookie = raw
-        }
+        val customPairs = parseCookiePairs(raw)
+        if (customPairs.isEmpty()) return chain.proceed(request)
+        val customNames = customPairs.map { it.first }.toSet()
+        // Keep other cookies from CookieJar (such as ax_rp) while overriding any stale session cookie
+        val jarCookies = client.cookieJar.loadForRequest(request.url)
+            .filter { it.name !in customNames }
+            .map { "${it.name}=${it.value}" }
+        val customCookies = customPairs.map { (name, value) -> "$name=$value" }
+        val cookieHeader = (jarCookies + customCookies).joinToString("; ")
+        return chain.proceed(
+            request.newBuilder()
+                .header("Cookie", cookieHeader)
+                .build(),
+        )
     }
 
     // Signs the site's reader calls; its keys come with the chapter page
@@ -152,7 +142,6 @@ abstract class Aedex :
     private class OutdatedReaderException : IOException("The site's reader changed, try again")
 
     private suspend fun requestFreeReader(chapter: SChapter, fetch: Fetch, freeReader: FreeReader): FreeReaderDto {
-        applySessionCookie()
         val slug = chapter.url.substringBeforeLast('/')
         // The site sends the number as parseFloat does
         val number = chapter.url.substringAfterLast('/').let { it.toDoubleOrNull()?.toString()?.removeSuffix(".0") ?: it }
@@ -179,7 +168,6 @@ abstract class Aedex :
                             when {
                                 // The pass is gone, or was given to another IP: solve a new one
                                 response.code == 403 && code == "READER_PASS_REQUIRED" && retry -> renewPass = true
-                                code == "LOGIN_REQUIRED" && retry && configuredSessionCookie().isNotEmpty() -> applySessionCookie(force = true)
                                 code == "LOGIN_REQUIRED" -> throw LoginRequiredException()
                                 else -> throw response.siteError(code)
                             }
@@ -195,7 +183,6 @@ abstract class Aedex :
                 if (!retry || !e.isCloudflare403()) throw e
                 signer = null
                 renewPass = true
-                applySessionCookie(force = true)
             }
         }
         throw IOException("Couldn't open the reader")
@@ -231,13 +218,7 @@ abstract class Aedex :
         ).asJsoup()
     }
 
-    private suspend fun openReader(chapter: SChapter): Document = try {
-        openReaderOnce(chapter)
-    } catch (e: LoginRequiredException) {
-        if (configuredSessionCookie().isEmpty()) throw e
-        applySessionCookie(force = true)
-        openReaderOnce(chapter)
-    }
+    private suspend fun openReader(chapter: SChapter): Document = openReaderOnce(chapter)
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         val session = readerSession(openReader(chapter))
@@ -300,7 +281,6 @@ abstract class Aedex :
     companion object {
         private const val PREF_SESSION_COOKIE = "aedex_session_cookie"
         private const val DEFAULT_SESSION_COOKIE = "__Secure-next-auth.session-token"
-        private const val SESSION_COOKIE_TTL_MS = 30L * 24 * 60 * 60 * 1000
         private const val PASS_COOKIE = "ax_rp"
         private const val MAX_ATTEMPTS = 3
         private val HEX_32_REGEX = Regex("^[0-9a-f]{32}$")
