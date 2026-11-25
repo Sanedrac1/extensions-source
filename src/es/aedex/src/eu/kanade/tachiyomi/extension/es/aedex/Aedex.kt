@@ -55,6 +55,7 @@ abstract class Aedex :
     override fun mangaKey(manga: MangaDto) = manga.slug
 
     override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(::sessionCookieInterceptor)
+        .addInterceptor(::bearerInterceptor)
         .addInterceptor(ImageInterceptor(::renewSession))
 
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/$mangaPath/${chapter.url}"
@@ -113,6 +114,59 @@ abstract class Aedex :
         )
     }
 
+    private val tokenLock = Mutex()
+
+    @Volatile
+    private var cachedAccessToken: String? = null
+
+    @Volatile
+    private var tokenCookieSnapshot: String? = null
+
+    // The account's Bearer token goes only to the site's own host, never to CDNs or external readers
+    private fun bearerInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val token = cachedAccessToken
+        if (
+            token.isNullOrEmpty() ||
+            request.url.host != baseUrl.toHttpUrl().host ||
+            request.header("Authorization") != null ||
+            request.url.encodedPath.startsWith("/api/auth/")
+        ) {
+            return chain.proceed(request)
+        }
+        return chain.proceed(
+            request.newBuilder()
+                .header("Authorization", "Bearer $token")
+                .build(),
+        )
+    }
+
+    // Mints/refreshes the backend `access_token` from `/api/auth/session` using the configured session cookie
+    private suspend fun ensureAccessToken(force: Boolean = false): Boolean {
+        val raw = configuredSessionCookie()
+        if (raw.isEmpty()) {
+            cachedAccessToken = null
+            tokenCookieSnapshot = null
+            return false
+        }
+        return tokenLock.withLock {
+            if (!force && !cachedAccessToken.isNullOrEmpty() && tokenCookieSnapshot == raw) {
+                return@withLock true
+            }
+            val fresh = runCatching {
+                client.get("$baseUrl/api/auth/session", headers, Fetch.XHR).parseAs<AedexSessionDto>().token()
+            }.getOrNull()
+            if (fresh.isNullOrEmpty()) {
+                cachedAccessToken = null
+                throw IOException("La Cookie de sesión de Aedex caducó o no es válida. Actualízala en los ajustes de Aedex")
+            }
+            val changed = fresh != cachedAccessToken
+            cachedAccessToken = fresh
+            tokenCookieSnapshot = raw
+            changed || !force
+        }
+    }
+
     // Signs the site's reader calls; its keys come with the chapter page
     @Volatile
     private var signer: ReaderSigner? = null
@@ -142,11 +196,13 @@ abstract class Aedex :
     private class OutdatedReaderException : IOException("The site's reader changed, try again")
 
     private suspend fun requestFreeReader(chapter: SChapter, fetch: Fetch, freeReader: FreeReader): FreeReaderDto {
+        ensureAccessToken()
         val slug = chapter.url.substringBeforeLast('/')
         // The site sends the number as parseFloat does
         val number = chapter.url.substringAfterLast('/').let { it.toDoubleOrNull()?.toString()?.removeSuffix(".0") ?: it }
         val body = FreeReaderRequest(slug, number, "gratis").toJsonRequestBody()
         var renewPass = false
+        var refreshedToken = false
         for (attempt in 1..MAX_ATTEMPTS) {
             val retry = attempt < MAX_ATTEMPTS
             try {
@@ -168,6 +224,7 @@ abstract class Aedex :
                             when {
                                 // The pass is gone, or was given to another IP: solve a new one
                                 response.code == 403 && code == "READER_PASS_REQUIRED" && retry -> renewPass = true
+                                code == "LOGIN_REQUIRED" && retry && !refreshedToken && ensureAccessToken(force = true) -> refreshedToken = true
                                 code == "LOGIN_REQUIRED" -> throw LoginRequiredException()
                                 else -> throw response.siteError(code)
                             }
@@ -183,6 +240,10 @@ abstract class Aedex :
                 if (!retry || !e.isCloudflare403()) throw e
                 signer = null
                 renewPass = true
+                if (!refreshedToken) {
+                    ensureAccessToken(force = true)
+                    refreshedToken = true
+                }
             }
         }
         throw IOException("Couldn't open the reader")
@@ -218,7 +279,12 @@ abstract class Aedex :
         ).asJsoup()
     }
 
-    private suspend fun openReader(chapter: SChapter): Document = openReaderOnce(chapter)
+    private suspend fun openReader(chapter: SChapter): Document = try {
+        openReaderOnce(chapter)
+    } catch (e: LoginRequiredException) {
+        if (configuredSessionCookie().isEmpty() || !ensureAccessToken(force = true)) throw e
+        openReaderOnce(chapter)
+    }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         val session = readerSession(openReader(chapter))
