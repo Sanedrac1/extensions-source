@@ -54,7 +54,8 @@ abstract class Aedex :
 
     override fun mangaKey(manga: MangaDto) = manga.slug
 
-    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addInterceptor(::sessionCookieInterceptor)
+    // Must be a network interceptor so it runs AFTER OkHttp's BridgeInterceptor (which otherwise overwrites Cookie from CookieJar)
+    override fun OkHttpClient.Builder.addReaderInterceptors(): OkHttpClient.Builder = addNetworkInterceptor(::sessionCookieInterceptor)
         .addInterceptor(::bearerInterceptor)
         .addInterceptor(ImageInterceptor(::renewSession))
 
@@ -101,12 +102,18 @@ abstract class Aedex :
         val customPairs = parseCookiePairs(raw)
         if (customPairs.isEmpty()) return chain.proceed(request)
         val customNames = customPairs.map { it.first }.toSet()
-        // Keep other cookies from CookieJar (such as ax_rp) while overriding any stale session cookie
-        val jarCookies = client.cookieJar.loadForRequest(request.url)
-            .filter { it.name !in customNames }
-            .map { "${it.name}=${it.value}" }
+        // Keep other cookies placed by BridgeInterceptor (such as ax_rp) while replacing any stale session cookie
+        val existingCookies = request.header("Cookie").orEmpty()
+            .split(';')
+            .mapNotNull { entry ->
+                val trimmed = entry.trim()
+                val idx = trimmed.indexOf('=')
+                if (idx <= 0) return@mapNotNull null
+                val name = trimmed.substring(0, idx).trim()
+                if (name in customNames) null else trimmed
+            }
         val customCookies = customPairs.map { (name, value) -> "$name=$value" }
-        val cookieHeader = (jarCookies + customCookies).joinToString("; ")
+        val cookieHeader = (existingCookies + customCookies).joinToString("; ")
         return chain.proceed(
             request.newBuilder()
                 .header("Cookie", cookieHeader)
