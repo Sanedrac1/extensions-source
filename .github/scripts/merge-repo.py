@@ -91,11 +91,11 @@ all_extensions.extend(local_proto.extensions)
 all_extensions.sort(key=lambda ext: ext.packageName)
 
 index = index_pb2.Index(
-    name="Keiyoushi",
-    badgeLabel="KEI",
-    signingKey="9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
+    name="Sanedrac1",
+    badgeLabel="SAN",
+    signingKey="f5be5edf2158c479fdb9b4de89ff5d742d72eec885ee2cbf5ffe03d21dcca368",
     contact=index_pb2.Contact(
-        website="https://keiyoushi.github.io", discord="https://discord.gg/3FbCpdKbdY"
+        website="https://github.com/Sanedrac1/extensions"
     ),
     extensionList=index_pb2.ExtensionList(extensions=all_extensions),
 )
